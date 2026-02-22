@@ -1,62 +1,56 @@
 # Tokemon
 
-Unified LLM token usage tracking across all AI coding tool providers.
+Unified LLM token usage tracking across AI coding tools.
+
+Tokemon reads local session logs from 16 AI coding assistants, estimates costs using the [LiteLLM](https://github.com/BerriAI/litellm) pricing database, and presents daily, weekly, or monthly reports in the terminal or as JSON.
+
+```
+╭────────────┬─────────────┬──────────┬─────────┬─────────┬─────────────┬───────────────┬───────────────┬──────────╮
+│ Date       │ Provider    │ Model    │   Input │  Output │ Cache Write │    Cache Read │  Total Tokens │     Cost │
+├────────────┼─────────────┼──────────┼─────────┼─────────┼─────────────┼───────────────┼───────────────┼──────────┤
+│ 2026-02-20 │ claude-code │ opus-4-1 │  93,518 │  15,623 │   5,106,236 │    57,177,420 │    62,392,797 │  $184.08 │
+│ 2026-02-20 │ claude-code │ opus-4-6 │ 269,971 │ 136,153 │  20,735,988 │   334,303,122 │   355,445,234 │  $301.51 │
+│ ...        │             │          │         │         │             │               │               │          │
+│ TOTAL      │             │          │ 821,808 │ 553,390 │  71,359,819 │ 1,316,632,770 │ 1,389,367,787 │ $1662.67 │
+╰────────────┴─────────────┴──────────┴─────────┴─────────┴─────────────┴───────────────┴───────────────┴──────────╯
+```
 
 ## Features
 
-- **16 providers**: Claude Code, Codex, Gemini CLI, Amp, OpenCode, Cline, Roo Code, Kilo Code, GitHub Copilot, Pi Agent, Kimi, Droid, OpenClaw, Qwen Code, Piebald, Cursor
-- **Auto-discovery**: detects which providers are installed on your machine
-- **Cost estimation**: LiteLLM pricing database with three-level model matching
-- **Flexible reporting**: daily, weekly, monthly aggregation
-- **Two display modes**: detailed per-model breakdown or compact compact view
-- **Filtering**: by provider (`-p`), date range (`--since`/`--until`)
-- **JSON output**: for piping to `jq` or other tools
-- **Deduplication**: by message_id:request_id to prevent double-counting
-- **Parallel parsing**: uses rayon for multi-threaded file processing
-- **Config system**: `~/.config/tokemon/config.toml` for persistent preferences
+- **16 providers** — Claude Code, Codex, Gemini CLI, Amp, OpenCode, Cline, Roo Code, Kilo Code, Copilot, Pi Agent, Kimi, Droid, OpenClaw, Qwen Code, Piebald, Cursor
+- **Auto-discovery** — detects installed providers and finds their log directories
+- **Cost estimation** — LiteLLM pricing with three-level model name matching
+- **Flexible reporting** — daily, weekly, or monthly aggregation
+- **Two display modes** — detailed per-model breakdown or compact one-row-per-day view
+- **Filtering** — by provider (`-p`), date range (`--since` / `--until`), sort order (`-o`)
+- **JSON output** — `--json` for piping to `jq` or downstream tools
+- **Deduplication** — prevents double-counting from duplicate log entries
+- **Parallel parsing** — multi-threaded file processing with [rayon](https://github.com/rayon-rs/rayon)
+- **Configurable** — persistent preferences via `~/.config/tokemon/config.toml`
 
 ## Installation
 
-### Prerequisites
+### From source (recommended)
 
-- [Docker](https://docs.docker.com/get-docker/) (required for building on machines with endpoint protection)
-- macOS, Linux, or Windows
-
-### Quick Start
+Requires [Rust 1.83+](https://rustup.rs/).
 
 ```bash
-git clone git@github.com:mm65x/tokemon.git
+git clone https://github.com/mm65x/tokemon.git
 cd tokemon
-
-# Build (first run builds Docker image + Rust binary)
-./tokemon.sh discover
-
-# Daily usage report
-./tokemon.sh
-
-# Weekly with cost, offline pricing
-./tokemon.sh weekly --offline
-```
-
-### Building Manually (without Docker)
-
-If your machine allows running Rust build scripts:
-
-```bash
 cargo build --release
-./target/release/tokemon discover
+# Binary is at ./target/release/tokemon
+
+# Optionally install to PATH:
+cargo install --path .
 ```
 
-### Building with Docker (recommended for corporate machines)
-
-The `tokemon.sh` wrapper handles everything:
+### With Docker
 
 ```bash
-# First run: builds Docker image and compiles the binary
-./tokemon.sh discover
-
-# Subsequent runs are instant (uses cached binary)
-./tokemon.sh daily --since 2026-02-01
+git clone https://github.com/mm65x/tokemon.git
+cd tokemon
+make docker-build
+make docker-run ARGS="discover"
 ```
 
 ## Usage
@@ -65,22 +59,23 @@ The `tokemon.sh` wrapper handles everything:
 tokemon [COMMAND] [OPTIONS]
 
 Commands:
-  daily      Show daily usage breakdown (default)
-  weekly     Show weekly usage summary
-  monthly    Show monthly usage summary
-  discover   List auto-detected providers
-  init       Generate default config file
+  daily       Show daily usage breakdown (default)
+  weekly      Show weekly usage summary
+  monthly     Show monthly usage summary
+  discover    List auto-detected providers on this machine
+  init        Generate default config file
 
 Options:
-  -b, --breakdown       Per-model breakdown (default)
-      --no-breakdown    Compact mode: one row per date
-  -p, --provider NAME   Filter by provider (repeatable)
-      --since DATE      Show usage from this date (YYYY-MM-DD)
-      --until DATE      Show usage until this date (YYYY-MM-DD)
-      --no-cost         Skip cost calculation
-      --offline         Use cached pricing data only
-  -o, --order ORDER     Sort: asc (default) or desc
-      --json            Output as JSON
+  -d, --display <MODE>    Display mode: breakdown (default) or compact
+  -p, --provider <NAME>   Filter by provider (repeatable)
+      --since <DATE>      Start date (YYYY-MM-DD, inclusive)
+      --until <DATE>      End date (YYYY-MM-DD, inclusive)
+      --no-cost           Skip cost calculation
+      --offline           Use cached pricing only, no network
+  -o, --order <ORDER>     Sort: asc (default) or desc
+      --json              Output as JSON
+  -h, --help              Print help
+  -V, --version           Print version
 ```
 
 ### Examples
@@ -89,56 +84,40 @@ Options:
 # See which providers are installed
 tokemon discover
 
-# Daily report with per-model breakdown
-tokemon daily
+# Daily report (default)
+tokemon
 
 # Compact view — one row per day
-tokemon --no-breakdown
+tokemon -d compact
 
-# This month only, JSON output
-tokemon monthly --since 2026-02-01 --json
+# Monthly report, JSON output
+tokemon monthly --json
 
-# Just Claude Code, no network
+# Filter to a single provider, no network
 tokemon -p claude-code --offline
 
-# Newest first
-tokemon -o desc --since 2026-02-15
+# Last two weeks, newest first
+tokemon --since 2026-02-08 -o desc
 ```
 
 ## Configuration
 
-Generate a config file:
+Generate a default config file:
 
 ```bash
 tokemon init
 # Creates ~/.config/tokemon/config.toml
 ```
 
-Example config:
-
 ```toml
-# Default subcommand: "daily", "weekly", "monthly"
 default_command = "daily"
-
-# Default output: "table" or "json"
 default_format = "table"
-
-# Show per-model breakdown by default
 breakdown = true
-
-# Skip cost calculation
 no_cost = false
-
-# Use offline pricing
 offline = false
-
-# Default providers (empty = all available)
+sort_order = "asc"
 providers = []
 
-# Sort order: "asc" or "desc"
-sort_order = "asc"
-
-# Column visibility
 [columns]
 date = true
 provider = true
@@ -155,20 +134,65 @@ CLI flags always override config values.
 
 ## Supported Providers
 
-| Provider | Data Source | Format |
-|----------|-----------|--------|
+| Provider | Log Location | Format |
+|----------|-------------|--------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | JSONL |
-| Codex CLI | `~/.codex/sessions/**/*.jsonl` | JSONL (state machine) |
+| Codex CLI | `~/.codex/sessions/**/*.jsonl` | JSONL |
 | Gemini CLI | `~/.gemini/tmp/**/session*.json` | JSON |
 | Amp | `~/.local/share/amp/threads/**/*.jsonl` | JSONL |
-| OpenCode | `~/.local/share/opencode/storage/message/**/msg_*.json` | JSON |
-| Cline | VSCode globalStorage `saoudrizwan.claude-dev` | JSON |
-| Roo Code | VSCode globalStorage `rooveterinaryinc.roo-cline` | JSON |
-| Kilo Code | VSCode globalStorage `kilocode.kilo-code` | JSON |
-| GitHub Copilot | VSCode workspaceStorage (no token data) | JSON |
-| Cursor | `~/.config/tokscale/cursor-cache/usage*.csv` | CSV |
+| OpenCode | `~/.local/share/opencode/storage/message/**/*.json` | JSON |
+| Cline | VSCode globalStorage | JSON |
+| Roo Code | VSCode globalStorage | JSON |
+| Kilo Code | VSCode globalStorage | JSON |
+| Copilot | VSCode workspaceStorage | JSON (stub) |
+| Cursor | `~/.config/tokscale/cursor-cache/*.csv` | CSV |
 | Qwen Code | `~/.qwen/tmp/**/session.json` | JSON |
+| Pi Agent | `~/.pi-agent/sessions/**/*.jsonl` | JSONL |
+| Kimi | `~/.kimi/sessions/**/*.jsonl` | JSONL |
+| Droid | `~/.droid/sessions/**/*.jsonl` | JSONL |
+| OpenClaw | `~/.openclaw/sessions/**/*.jsonl` | JSONL |
 | Piebald | `~/Library/Application Support/piebald/app.db` | SQLite (stub) |
 
+Adding a new provider requires implementing the `Provider` trait — see `src/provider/jsonl_provider.rs` for a template that covers most JSONL-based tools in ~20 lines.
+
+## Development
+
+```bash
+make help          # Show available targets
+make build         # Build release binary
+make test          # Run tests
+make lint          # Run clippy
+make fmt           # Format code
+make ci            # Run all checks (fmt + lint + test)
+make docker-build  # Build Docker image
+```
+
+## Architecture
+
+```
+src/
+├── main.rs              # CLI entry, command dispatch
+├── cli.rs               # clap argument definitions
+├── config.rs            # TOML config loading and validation
+├── types.rs             # Core data types (UsageEntry, Report, etc.)
+├── error.rs             # Error types
+├── parse_utils.rs       # Shared timestamp parsing
+├── pricing.rs           # LiteLLM cost calculation engine
+├── aggregator.rs        # Daily/weekly/monthly grouping
+├── dedup.rs             # Deduplication logic
+├── output.rs            # Table and JSON rendering
+├── paths.rs             # Platform-specific path resolution
+└── provider/
+    ├── mod.rs            # Provider trait and registry
+    ├── jsonl_provider.rs # Generic JSONL provider (5 providers use this)
+    ├── cline_format.rs   # Shared Cline-format parser (3 providers use this)
+    ├── claude_code.rs    # Claude Code parser
+    ├── codex.rs          # Codex CLI parser (state machine)
+    └── ...               # One file per provider
+```
 
 
+
+## License
+
+MIT

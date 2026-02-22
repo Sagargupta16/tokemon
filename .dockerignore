@@ -1,4 +1,7 @@
 target/
+.git/
 .research/
 reference-repos/
 *.md
+!README.md
+.DS_Store
