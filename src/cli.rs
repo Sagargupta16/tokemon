@@ -1,5 +1,13 @@
 use chrono::NaiveDate;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DisplayMode {
+    /// Per-model breakdown rows
+    Breakdown,
+    /// One row per date compact view
+    Compact,
+}
 
 #[derive(Parser)]
 #[command(name = "tokemon", version, about = "Unified LLM token usage tracking across all providers")]
@@ -11,13 +19,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Show per-model breakdown (default; use --no-breakdown for compact)
-    #[arg(short = 'b', long, global = true)]
-    pub breakdown: bool,
-
-    /// Compact mode: one row per date (no per-model breakdown)
-    #[arg(long = "no-breakdown", global = true)]
-    pub no_breakdown: bool,
+    /// Display mode: breakdown (per-model) or compact (per-date)
+    #[arg(short = 'd', long, global = true, value_enum)]
+    pub display: Option<DisplayMode>,
 
     /// Filter by provider (repeatable: -p claude-code -p codex)
     #[arg(short = 'p', long = "provider", global = true)]
@@ -45,15 +49,15 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Whether to show per-model breakdown, considering config and CLI flags
-    pub fn should_breakdown(&self, config: &crate::config::Config) -> bool {
-        if self.no_breakdown {
-            return false;
-        }
-        if self.breakdown {
-            return true;
-        }
-        config.breakdown
+    /// Resolve display mode from CLI flag and config default
+    pub fn display_mode(&self, config: &crate::config::Config) -> DisplayMode {
+        self.display.unwrap_or_else(|| {
+            if config.breakdown {
+                DisplayMode::Breakdown
+            } else {
+                DisplayMode::Compact
+            }
+        })
     }
 
     /// Whether to use descending sort order
