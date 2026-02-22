@@ -93,11 +93,8 @@ impl ClineFormatParser {
                 Err(_) => continue,
             };
 
-            let timestamp = match msg.ts {
-                Some(ts_ms) => match chrono::DateTime::from_timestamp_millis(ts_ms) {
-                    Some(dt) => dt,
-                    None => continue,
-                },
+            let timestamp = match msg.ts.and_then(crate::parse_utils::parse_timestamp_millis) {
+                Some(dt) => dt,
                 None => continue,
             };
 

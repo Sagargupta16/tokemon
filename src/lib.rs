@@ -2,6 +2,7 @@ pub mod aggregator;
 pub mod cli;
 pub mod config;
 pub mod dedup;
+pub mod parse_utils;
 pub mod error;
 pub mod output;
 pub mod paths;

@@ -3,10 +3,10 @@ use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use chrono::DateTime;
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
+use crate::parse_utils;
 use crate::types::UsageEntry;
 
 /// Configuration trait for generic JSONL providers.
@@ -126,11 +126,8 @@ impl<C: JsonlProviderConfig> super::Provider for GenericJsonlProvider<C> {
                 None => continue,
             };
 
-            let timestamp = match &parsed.timestamp {
-                Some(ts) => match DateTime::parse_from_rfc3339(ts) {
-                    Ok(dt) => dt.to_utc(),
-                    Err(_) => continue,
-                },
+            let timestamp = match parsed.timestamp.as_deref().and_then(parse_utils::parse_timestamp) {
+                Some(dt) => dt,
                 None => continue,
             };
 

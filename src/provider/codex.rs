@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use chrono::DateTime;
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
+use crate::parse_utils;
 use crate::paths;
 use crate::types::UsageEntry;
 
@@ -128,11 +128,8 @@ impl super::Provider for CodexProvider {
                         None => continue,
                     };
 
-                    let timestamp = match &parsed.timestamp {
-                        Some(ts) => match DateTime::parse_from_rfc3339(ts) {
-                            Ok(dt) => dt.to_utc(),
-                            Err(_) => continue,
-                        },
+                    let timestamp = match parsed.timestamp.as_deref().and_then(parse_utils::parse_timestamp) {
+                        Some(dt) => dt,
                         None => continue,
                     };
 

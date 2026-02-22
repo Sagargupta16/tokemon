@@ -53,19 +53,9 @@ impl super::Provider for CursorProvider {
                 continue;
             }
 
-            let timestamp = match chrono::DateTime::parse_from_rfc3339(fields[0].trim()) {
-                Ok(dt) => dt.to_utc(),
-                Err(_) => {
-                    // Try parsing as Unix timestamp
-                    if let Ok(ts) = fields[0].trim().parse::<i64>() {
-                        match chrono::DateTime::from_timestamp(ts, 0) {
-                            Some(dt) => dt,
-                            None => continue,
-                        }
-                    } else {
-                        continue
-                    }
-                }
+            let timestamp = match crate::parse_utils::parse_timestamp(fields[0].trim()) {
+                Some(dt) => dt,
+                None => continue,
             };
 
             let model = fields[1].trim().to_string();

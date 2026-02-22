@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod dedup;
 mod error;
+mod parse_utils;
 mod output;
 mod paths;
 mod pricing;
