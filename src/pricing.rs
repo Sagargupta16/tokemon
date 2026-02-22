@@ -128,20 +128,30 @@ impl PricingEngine {
             }
         }
 
-        // 4. Prefix match - find any key where model starts with it, or vice versa
+        // 4. Prefix match - longest match wins, requires word boundary
+        let mut best_match: Option<&ModelPricing> = None;
+        let mut best_len: usize = 0;
+
         for (key, pricing) in &self.models {
-            // Skip keys with '/' for this generic matching
             let plain_key = key.split('/').last().unwrap_or(key);
-            if model.starts_with(plain_key) || plain_key.starts_with(model) {
-                return Some(pricing);
-            }
             let norm_key = normalize_model_name(plain_key);
-            if normalized.starts_with(&norm_key) || norm_key.starts_with(&normalized) {
-                return Some(pricing);
+
+            // Only match if our model starts with the pricing key
+            // AND the match ends at a word boundary (delimiter or end of string)
+            if normalized.starts_with(&norm_key) && norm_key.len() > best_len {
+                let at_boundary = normalized.len() == norm_key.len()
+                    || matches!(
+                        normalized.as_bytes().get(norm_key.len()),
+                        Some(b'-' | b'_' | b'.')
+                    );
+                if at_boundary {
+                    best_match = Some(pricing);
+                    best_len = norm_key.len();
+                }
             }
         }
 
-        None
+        best_match
     }
 
     fn cache_path() -> PathBuf {
