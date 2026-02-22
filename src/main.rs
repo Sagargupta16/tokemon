@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use clap::Parser;
 
 mod aggregator;
@@ -8,6 +8,7 @@ mod config;
 mod dedup;
 mod error;
 mod output;
+mod pacemaker;
 mod parse_utils;
 mod paths;
 mod pricing;
@@ -32,6 +33,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Daily => cmd_report(&cli, &config, "daily"),
         Commands::Weekly => cmd_report(&cli, &config, "weekly"),
         Commands::Monthly => cmd_report(&cli, &config, "monthly"),
+        Commands::Statusline { period } => cmd_statusline(&cli, &config, *period),
+        Commands::Budget => cmd_budget(&cli, &config),
     }
 }
 
@@ -151,6 +154,122 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
         let breakdown = cli.display_mode(config) == cli::DisplayMode::Breakdown;
         output::print_table(&report, breakdown);
     }
+
+    Ok(())
+}
+
+fn cmd_statusline(cli: &Cli, config: &Config, period: cli::StatuslinePeriod) -> anyhow::Result<()> {
+    let registry = ProviderRegistry::new();
+    let provider_filter = if cli.providers.is_empty() {
+        &config.providers
+    } else {
+        &cli.providers
+    };
+
+    let mut entries = parse_with_cache(&registry, provider_filter)?;
+
+    // Apply pricing (always offline for statusline — must be fast)
+    if !cli.no_cost && !config.no_cost {
+        match pricing::PricingEngine::load(true) {
+            Ok(engine) => engine.apply_costs(&mut entries),
+            Err(_) => {}
+        }
+    }
+
+    // Filter to the requested period
+    let today = chrono::Utc::now().date_naive();
+    let since = match period {
+        cli::StatuslinePeriod::Today => today,
+        cli::StatuslinePeriod::Week => {
+            today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
+        }
+        cli::StatuslinePeriod::Month => {
+            chrono::NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today)
+        }
+    };
+    let period_label = match period {
+        cli::StatuslinePeriod::Today => "today",
+        cli::StatuslinePeriod::Week => "this week",
+        cli::StatuslinePeriod::Month => "this month",
+    };
+
+    let filtered: Vec<&types::UsageEntry> = entries
+        .iter()
+        .filter(|e| e.timestamp.date_naive() >= since)
+        .collect();
+
+    let total_cost: f64 = filtered.iter().filter_map(|e| e.cost_usd).sum();
+    let total_tokens: u64 = filtered.iter().map(|e| e.total_tokens()).sum();
+    let provider_count = filtered
+        .iter()
+        .map(|e| e.provider.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // If budget is configured, append budget info
+    if config.budget.daily.is_some() || config.budget.weekly.is_some() || config.budget.monthly.is_some() {
+        let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
+        // Show the most relevant budget for the period
+        let budget_str = match period {
+            cli::StatuslinePeriod::Today => daily.map(|(s, l)| format_budget_short(s, l)),
+            cli::StatuslinePeriod::Week => weekly.map(|(s, l)| format_budget_short(s, l)),
+            cli::StatuslinePeriod::Month => monthly.map(|(s, l)| format_budget_short(s, l)),
+        };
+        if let Some(bs) = budget_str {
+            let provider_str = if provider_count == 1 {
+                "1 provider".to_string()
+            } else {
+                format!("{} providers", provider_count)
+            };
+            println!(
+                "${:.2} | {} | {} | {} | {}",
+                total_cost,
+                output::format_tokens_short(total_tokens),
+                provider_str,
+                period_label,
+                bs
+            );
+        } else {
+            output::print_statusline(total_cost, total_tokens, provider_count, period_label);
+        }
+    } else {
+        output::print_statusline(total_cost, total_tokens, provider_count, period_label);
+    }
+
+    Ok(())
+}
+
+fn format_budget_short(spent: f64, limit: f64) -> String {
+    let pct = if limit > 0.0 { spent / limit * 100.0 } else { 0.0 };
+    if pct > 100.0 {
+        format!("OVER ${:.0} limit", limit)
+    } else {
+        format!("{:.0}%", pct)
+    }
+}
+
+fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
+    let registry = ProviderRegistry::new();
+    let provider_filter = if cli.providers.is_empty() {
+        &config.providers
+    } else {
+        &cli.providers
+    };
+
+    let mut entries = parse_with_cache(&registry, provider_filter)?;
+
+    // Apply pricing
+    if !cli.no_cost && !config.no_cost {
+        match pricing::PricingEngine::load(cli.offline || config.offline) {
+            Ok(engine) => engine.apply_costs(&mut entries),
+            Err(e) => {
+                eprintln!("[tokemon] Warning: pricing unavailable: {}", e);
+            }
+        }
+    }
+
+    let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
+    output::print_budget(daily, weekly, monthly);
 
     Ok(())
 }

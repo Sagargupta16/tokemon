@@ -34,6 +34,31 @@ pub struct Config {
 
     /// Sort order: "asc" (oldest first) or "desc" (newest first)
     pub sort_order: String,
+
+    /// Budget limits for pacemaker
+    pub budget: BudgetConfig,
+}
+
+/// Budget limits for the pacemaker system (all in USD)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetConfig {
+    /// Daily spending limit
+    pub daily: Option<f64>,
+    /// Weekly spending limit
+    pub weekly: Option<f64>,
+    /// Monthly spending limit
+    pub monthly: Option<f64>,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            daily: None,
+            weekly: None,
+            monthly: None,
+        }
+    }
 }
 
 /// Which columns to display in table output
@@ -62,6 +87,7 @@ impl Default for Config {
             providers: Vec::new(),
             columns: ColumnConfig::default(),
             sort_order: "asc".to_string(),
+            budget: BudgetConfig::default(),
         }
     }
 }

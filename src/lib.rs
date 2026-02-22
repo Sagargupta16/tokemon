@@ -6,6 +6,7 @@ pub mod dedup;
 pub mod parse_utils;
 pub mod error;
 pub mod output;
+pub mod pacemaker;
 pub mod paths;
 pub mod pricing;
 pub mod provider;

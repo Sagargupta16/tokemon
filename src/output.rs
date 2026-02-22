@@ -213,6 +213,80 @@ fn grand_totals(report: &Report) -> (u64, u64, u64, u64, u64) {
     (gi, go, gcw, gcr, gt)
 }
 
+pub fn print_statusline(total_cost: f64, total_tokens: u64, provider_count: usize, period_label: &str) {
+    let provider_str = if provider_count == 1 {
+        "1 provider".to_string()
+    } else {
+        format!("{} providers", provider_count)
+    };
+
+    println!(
+        "{} | {} | {} | {}",
+        format_cost(total_cost),
+        format_tokens_short(total_tokens),
+        provider_str,
+        period_label
+    );
+}
+
+pub fn print_budget(daily: Option<(f64, f64)>, weekly: Option<(f64, f64)>, monthly: Option<(f64, f64)>) {
+    let lines = [
+        ("Daily", daily),
+        ("Weekly", weekly),
+        ("Monthly", monthly),
+    ];
+
+    let mut any = false;
+    for (label, budget) in &lines {
+        if let Some((spent, limit)) = budget {
+            any = true;
+            let pct = if *limit > 0.0 { spent / limit * 100.0 } else { 0.0 };
+            let bar = progress_bar(pct, 10);
+            let status = if pct > 100.0 {
+                "OVER"
+            } else if pct > 90.0 {
+                "!!"
+            } else if pct > 60.0 {
+                "!"
+            } else {
+                "ok"
+            };
+            println!(
+                "{:<8} ${:>8.2} / ${:<8.2} [{}] {:>5.1}%  {}",
+                format!("{}:", label),
+                spent,
+                limit,
+                bar,
+                pct,
+                status
+            );
+        }
+    }
+
+    if !any {
+        println!("No budgets configured. Set [budget] in ~/.config/tokemon/config.toml");
+    }
+}
+
+fn progress_bar(pct: f64, width: usize) -> String {
+    let filled = ((pct / 100.0) * width as f64).min(width as f64) as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "#".repeat(filled), "-".repeat(empty))
+}
+
+#[must_use]
+pub fn format_tokens_short(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1e3)
+    } else {
+        n.to_string()
+    }
+}
+
 pub fn print_json(report: &Report) {
     match serde_json::to_string_pretty(report) {
         Ok(json) => println!("{}", json),

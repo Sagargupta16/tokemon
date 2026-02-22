@@ -78,6 +78,16 @@ impl Cli {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StatuslinePeriod {
+    /// Today's usage
+    Today,
+    /// This week's usage
+    Week,
+    /// This month's usage
+    Month,
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     /// Show daily usage breakdown (default when no subcommand given)
@@ -86,6 +96,14 @@ pub enum Commands {
     Weekly,
     /// Show monthly usage summary
     Monthly,
+    /// Compact one-line output for shell prompts and status bars
+    Statusline {
+        /// Time period to summarize
+        #[arg(long, value_enum, default_value = "today")]
+        period: StatuslinePeriod,
+    },
+    /// Show budget progress against configured limits
+    Budget,
     /// List auto-detected providers on this machine
     Discover,
     /// Generate default config file at ~/.config/tokemon/config.toml
