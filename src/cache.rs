@@ -145,19 +145,6 @@ impl Cache {
         Ok(())
     }
 
-    /// Query entries for a specific file.
-    pub fn query_file_entries(&self, path: &Path) -> anyhow::Result<Vec<UsageEntry>> {
-        let path_str = path.display().to_string();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM usage_entries WHERE source_file = ?1 ORDER BY timestamp")?;
-        let entries = stmt
-            .query_map(params![path_str], Self::row_to_entry)?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(entries)
-    }
-
     /// Single source of truth for mapping a SQLite row to a UsageEntry.
     fn row_to_entry(row: &Row) -> rusqlite::Result<UsageEntry> {
         let ts_str: String = row.get("timestamp")?;
