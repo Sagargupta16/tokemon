@@ -39,49 +39,35 @@ impl super::Provider for CursorProvider {
 
     fn parse_file(&self, path: &Path) -> Result<Vec<UsageEntry>> {
         let content = fs::read_to_string(path).map_err(TokemonError::Io)?;
-        let mut entries = Vec::new();
 
-        for (i, line) in content.lines().enumerate() {
-            // Skip header row
-            if i == 0 {
-                continue;
-            }
+        let entries = content
+            .lines()
+            .skip(1) // Skip header row
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split(',').collect();
+                if fields.len() < 5 {
+                    return None;
+                }
 
-            let fields: Vec<&str> = line.split(',').collect();
-            // Expected CSV format: timestamp, model, input_tokens, output_tokens, cost
-            if fields.len() < 5 {
-                continue;
-            }
+                let timestamp = crate::parse_utils::parse_timestamp(fields[0].trim())?;
+                let model = fields[1].trim();
 
-            let timestamp = match crate::parse_utils::parse_timestamp(fields[0].trim()) {
-                Some(dt) => dt,
-                None => continue,
-            };
-
-            let model = fields[1].trim().to_string();
-            let input_tokens = fields[2].trim().parse::<u64>().unwrap_or(0);
-            let output_tokens = fields[3].trim().parse::<u64>().unwrap_or(0);
-            let cost = fields[4].trim().parse::<f64>().ok();
-
-            entries.push(UsageEntry {
-                timestamp,
-                provider: "cursor".to_string(),
-                model: if model.is_empty() {
-                    None
-                } else {
-                    Some(model)
-                },
-                input_tokens,
-                output_tokens,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                thinking_tokens: 0,
-                cost_usd: cost,
-                message_id: None,
-                request_id: None,
-                session_id: None,
-            });
-        }
+                Some(UsageEntry {
+                    timestamp,
+                    provider: "cursor".to_string(),
+                    model: if model.is_empty() { None } else { Some(model.to_string()) },
+                    input_tokens: fields[2].trim().parse().unwrap_or(0),
+                    output_tokens: fields[3].trim().parse().unwrap_or(0),
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    thinking_tokens: 0,
+                    cost_usd: fields[4].trim().parse().ok(),
+                    message_id: None,
+                    request_id: None,
+                    session_id: None,
+                })
+            })
+            .collect();
 
         Ok(entries)
     }

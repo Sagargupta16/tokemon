@@ -71,52 +71,46 @@ impl super::Provider for QwenProvider {
                 source: e,
             })?;
 
-        let messages = match session.messages {
-            Some(m) => m,
-            None => return Ok(Vec::new()),
+        let Some(messages) = session.messages else {
+            return Ok(Vec::new());
         };
 
+        // Qwen uses parent dir as session ID (file is always session.json)
         let session_id = path
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
+            .map(String::from);
 
-        let mut entries = Vec::new();
+        let entries = messages
+            .into_iter()
+            .filter(|msg| {
+                let t = msg.msg_type.as_deref().unwrap_or("");
+                t.eq_ignore_ascii_case("assistant") || t.eq_ignore_ascii_case("model")
+            })
+            .filter_map(|msg| {
+                let tokens = msg.tokens?;
+                let timestamp = msg
+                    .timestamp
+                    .as_deref()
+                    .and_then(parse_utils::parse_timestamp)?;
 
-        for msg in messages {
-            let msg_type = msg.msg_type.as_deref().unwrap_or("");
-            if !msg_type.eq_ignore_ascii_case("assistant")
-                && !msg_type.eq_ignore_ascii_case("model")
-            {
-                continue;
-            }
-
-            let tokens = match msg.tokens {
-                Some(t) => t,
-                None => continue,
-            };
-
-            let timestamp = match msg.timestamp.as_deref().and_then(parse_utils::parse_timestamp) {
-                Some(dt) => dt,
-                None => continue,
-            };
-
-            entries.push(UsageEntry {
-                timestamp,
-                provider: "qwen".to_string(),
-                model: msg.model,
-                input_tokens: tokens.input.unwrap_or(0),
-                output_tokens: tokens.output.unwrap_or(0),
-                cache_read_tokens: tokens.cached.unwrap_or(0),
-                cache_creation_tokens: 0,
-                thinking_tokens: tokens.thoughts.unwrap_or(0),
-                cost_usd: None,
-                message_id: None,
-                request_id: None,
-                session_id: session_id.clone(),
-            });
-        }
+                Some(UsageEntry {
+                    timestamp,
+                    provider: "qwen".to_string(),
+                    model: msg.model,
+                    input_tokens: tokens.input.unwrap_or(0),
+                    output_tokens: tokens.output.unwrap_or(0),
+                    cache_read_tokens: tokens.cached.unwrap_or(0),
+                    cache_creation_tokens: 0,
+                    thinking_tokens: tokens.thoughts.unwrap_or(0),
+                    cost_usd: None,
+                    message_id: None,
+                    request_id: None,
+                    session_id: session_id.clone(),
+                })
+            })
+            .collect();
 
         Ok(entries)
     }

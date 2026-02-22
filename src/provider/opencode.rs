@@ -92,7 +92,7 @@ impl super::Provider for OpenCodeProvider {
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
+            .map(String::from);
 
         Ok(vec![UsageEntry {
             timestamp,

@@ -67,71 +67,80 @@ fn cmd_init() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
-    let registry = ProviderRegistry::new();
+// --- Shared helpers for command handlers ---
 
-    // Determine providers: CLI overrides config
-    let provider_filter = if cli.providers.is_empty() {
+fn resolve_providers<'a>(cli: &'a Cli, config: &'a Config) -> &'a [String] {
+    if cli.providers.is_empty() {
         &config.providers
     } else {
         &cli.providers
-    };
+    }
+}
 
-    // Parse entries, using cache for speed
-    let mut entries = parse_with_cache(&registry, provider_filter)?;
+fn load_and_price(
+    cli: &Cli,
+    config: &Config,
+    force_offline: bool,
+) -> anyhow::Result<Vec<types::UsageEntry>> {
+    let registry = ProviderRegistry::new();
+    let filter = resolve_providers(cli, config);
+    let mut entries = parse_with_cache(&registry, filter)?;
+
+    if !(cli.no_cost || config.no_cost) {
+        let offline = force_offline || cli.offline || config.offline;
+        match pricing::PricingEngine::load(offline) {
+            Ok(engine) => engine.apply_costs(&mut entries),
+            Err(e) => {
+                if !force_offline {
+                    eprintln!("[tokemon] Warning: pricing unavailable: {}", e);
+                }
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+// --- Command handlers ---
+
+fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
+    let mut entries = load_and_price(cli, config, false)?;
 
     if entries.is_empty() {
         if cli.json {
-            let report = Report {
+            output::print_json(&Report {
                 period: period.to_string(),
                 generated_at: Utc::now(),
                 providers_found: Vec::new(),
                 summaries: Vec::new(),
                 total_cost: 0.0,
                 total_tokens: 0,
-            };
-            output::print_json(&report);
+            });
         } else {
             println!("No usage data found.");
-            if provider_filter.is_empty() {
+            if resolve_providers(cli, config).is_empty() {
                 println!("Run `tokemon discover` to see which providers are available.");
             }
         }
         return Ok(());
     }
 
-    // Apply date filters
     entries = aggregator::filter_by_date(entries, cli.since, cli.until);
 
-    // Apply pricing (CLI flags override config)
-    let no_cost = cli.no_cost || config.no_cost;
-    let offline = cli.offline || config.offline;
-    if !no_cost {
-        match pricing::PricingEngine::load(offline) {
-            Ok(engine) => engine.apply_costs(&mut entries),
-            Err(e) => {
-                eprintln!("[tokemon] Warning: pricing unavailable: {}", e);
-            }
-        }
-    }
-
-    // Collect provider names
     let mut providers_found: Vec<String> = entries
         .iter()
         .map(|e| e.provider.clone())
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
     providers_found.sort();
 
-    // Aggregate
     let mut summaries = match period {
         "weekly" => aggregator::aggregate_weekly(&entries),
         "monthly" => aggregator::aggregate_monthly(&entries),
         _ => aggregator::aggregate_daily(&entries),
     };
 
-    // Sort order
     if cli.is_desc(config) {
         summaries.reverse();
     }
@@ -159,25 +168,9 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
 }
 
 fn cmd_statusline(cli: &Cli, config: &Config, period: cli::StatuslinePeriod) -> anyhow::Result<()> {
-    let registry = ProviderRegistry::new();
-    let provider_filter = if cli.providers.is_empty() {
-        &config.providers
-    } else {
-        &cli.providers
-    };
+    let entries = load_and_price(cli, config, true)?;
 
-    let mut entries = parse_with_cache(&registry, provider_filter)?;
-
-    // Apply pricing (always offline for statusline — must be fast)
-    if !cli.no_cost && !config.no_cost {
-        match pricing::PricingEngine::load(true) {
-            Ok(engine) => engine.apply_costs(&mut entries),
-            Err(_) => {}
-        }
-    }
-
-    // Filter to the requested period
-    let today = chrono::Utc::now().date_naive();
+    let today = Utc::now().date_naive();
     let since = match period {
         cli::StatuslinePeriod::Today => today,
         cli::StatuslinePeriod::Week => {
@@ -193,51 +186,61 @@ fn cmd_statusline(cli: &Cli, config: &Config, period: cli::StatuslinePeriod) -> 
         cli::StatuslinePeriod::Month => "this month",
     };
 
-    let filtered: Vec<&types::UsageEntry> = entries
+    let total_cost: f64 = entries
         .iter()
         .filter(|e| e.timestamp.date_naive() >= since)
-        .collect();
-
-    let total_cost: f64 = filtered.iter().filter_map(|e| e.cost_usd).sum();
-    let total_tokens: u64 = filtered.iter().map(|e| e.total_tokens()).sum();
-    let provider_count = filtered
+        .filter_map(|e| e.cost_usd)
+        .sum();
+    let total_tokens: u64 = entries
         .iter()
+        .filter(|e| e.timestamp.date_naive() >= since)
+        .map(|e| e.total_tokens())
+        .sum();
+    let provider_count = entries
+        .iter()
+        .filter(|e| e.timestamp.date_naive() >= since)
         .map(|e| e.provider.as_str())
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    // If budget is configured, append budget info
-    if config.budget.daily.is_some() || config.budget.weekly.is_some() || config.budget.monthly.is_some() {
+    // Append budget info if configured
+    let budget_str = if config.budget.daily.is_some()
+        || config.budget.weekly.is_some()
+        || config.budget.monthly.is_some()
+    {
         let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
-        // Show the most relevant budget for the period
-        let budget_str = match period {
+        match period {
             cli::StatuslinePeriod::Today => daily.map(|(s, l)| format_budget_short(s, l)),
             cli::StatuslinePeriod::Week => weekly.map(|(s, l)| format_budget_short(s, l)),
             cli::StatuslinePeriod::Month => monthly.map(|(s, l)| format_budget_short(s, l)),
-        };
-        if let Some(bs) = budget_str {
-            let provider_str = if provider_count == 1 {
-                "1 provider".to_string()
-            } else {
-                format!("{} providers", provider_count)
-            };
-            println!(
-                "${:.2} | {} | {} | {} | {}",
-                total_cost,
-                output::format_tokens_short(total_tokens),
-                provider_str,
-                period_label,
-                bs
-            );
-        } else {
-            output::print_statusline(total_cost, total_tokens, provider_count, period_label);
         }
     } else {
-        output::print_statusline(total_cost, total_tokens, provider_count, period_label);
+        None
+    };
+
+    match budget_str {
+        Some(bs) => println!(
+            "${:.2} | {} | {} | {} | {}",
+            total_cost,
+            output::format_tokens_short(total_tokens),
+            format_provider_count(provider_count),
+            period_label,
+            bs
+        ),
+        None => output::print_statusline(total_cost, total_tokens, provider_count, period_label),
     }
 
     Ok(())
 }
+
+fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
+    let entries = load_and_price(cli, config, false)?;
+    let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
+    output::print_budget(daily, weekly, monthly);
+    Ok(())
+}
+
+// --- Formatting helpers ---
 
 fn format_budget_short(spent: f64, limit: f64) -> String {
     let pct = if limit > 0.0 { spent / limit * 100.0 } else { 0.0 };
@@ -248,31 +251,15 @@ fn format_budget_short(spent: f64, limit: f64) -> String {
     }
 }
 
-fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
-    let registry = ProviderRegistry::new();
-    let provider_filter = if cli.providers.is_empty() {
-        &config.providers
+fn format_provider_count(count: usize) -> String {
+    if count == 1 {
+        "1 provider".to_string()
     } else {
-        &cli.providers
-    };
-
-    let mut entries = parse_with_cache(&registry, provider_filter)?;
-
-    // Apply pricing
-    if !cli.no_cost && !config.no_cost {
-        match pricing::PricingEngine::load(cli.offline || config.offline) {
-            Ok(engine) => engine.apply_costs(&mut entries),
-            Err(e) => {
-                eprintln!("[tokemon] Warning: pricing unavailable: {}", e);
-            }
-        }
+        format!("{} providers", count)
     }
-
-    let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
-    output::print_budget(daily, weekly, monthly);
-
-    Ok(())
 }
+
+// --- Cache-aware parsing ---
 
 /// Parse entries using cache. Strategy:
 /// 1. Get all cached (file, mtime) pairs in one query
@@ -283,68 +270,48 @@ fn parse_with_cache(
     registry: &ProviderRegistry,
     filter: &[String],
 ) -> anyhow::Result<Vec<types::UsageEntry>> {
-    let cache = match Cache::open() {
-        Ok(c) => Some(c),
-        Err(e) => {
+    let cache = Cache::open()
+        .map_err(|e| {
             eprintln!("[tokemon] Warning: cache unavailable ({}); parsing all files", e);
-            None
-        }
+            e
+        })
+        .ok();
+
+    let providers = resolve_provider_refs(registry, filter)?;
+
+    let Some(cache) = cache else {
+        return parse_all_directly(&providers);
     };
 
-    let providers: Vec<&dyn provider::Provider> = if filter.is_empty() {
-        registry.available()
-    } else {
-        let mut selected = Vec::new();
-        for name in filter {
-            match registry.get(name) {
-                Some(p) => selected.push(p),
-                None => {
-                    return Err(error::TokemonError::ProviderNotFound(name.clone()).into())
-                }
-            }
-        }
-        selected
-    };
-
-    // Get cached file mtimes in one bulk query
-    let cached_mtimes = cache
-        .as_ref()
-        .map(|c| c.cached_file_mtimes())
-        .unwrap_or_default();
+    let cached_mtimes = cache.cached_file_mtimes();
 
     // Find files that need (re)parsing
-    let mut files_to_parse: Vec<(&dyn provider::Provider, std::path::PathBuf, i64)> = Vec::new();
-
-    for provider in &providers {
-        for file in provider.discover_files() {
-            let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
-            let file_key = file.display().to_string();
-
-            match cached_mtimes.get(&file_key) {
-                Some(&cached_mtime) if cached_mtime == mtime => {
-                    // Cache is fresh, skip
+    let files_to_parse: Vec<_> = providers
+        .iter()
+        .flat_map(|provider| {
+            provider.discover_files().into_iter().filter_map(|file| {
+                let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
+                let file_key = file.display().to_string();
+                if cached_mtimes.get(&file_key) == Some(&mtime) {
+                    None // Cache is fresh
+                } else {
+                    Some((*provider, file, mtime))
                 }
-                _ => {
-                    // New or modified file
-                    files_to_parse.push((*provider, file, mtime));
-                }
-            }
-        }
-    }
+            })
+        })
+        .collect();
 
     // Parse changed files and update cache
     if !files_to_parse.is_empty() {
-        if let Some(ref cache) = cache {
-            let _ = cache.begin();
+        if let Err(e) = cache.begin() {
+            eprintln!("[tokemon] Warning: cache transaction failed: {}", e);
         }
 
         for (provider, file, mtime) in &files_to_parse {
             match provider.parse_file(file) {
                 Ok(entries) => {
-                    if let Some(ref cache) = cache {
-                        if let Err(e) = cache.store_file_entries(file, *mtime, &entries) {
-                            eprintln!("[tokemon] Warning: cache write failed: {}", e);
-                        }
+                    if let Err(e) = cache.store_file_entries(file, *mtime, &entries) {
+                        eprintln!("[tokemon] Warning: cache write failed: {}", e);
                     }
                 }
                 Err(e) => {
@@ -353,27 +320,46 @@ fn parse_with_cache(
             }
         }
 
-        if let Some(ref cache) = cache {
-            let _ = cache.commit();
+        if let Err(e) = cache.commit() {
+            eprintln!("[tokemon] Warning: cache commit failed: {}", e);
         }
     }
 
-    // Load all entries from cache in one bulk query
-    let mut all_entries = if let Some(ref cache) = cache {
-        cache.load_all_entries()?
-    } else {
-        // No cache — parse everything directly
-        let mut entries = Vec::new();
-        for provider in &providers {
-            match provider.parse_all() {
-                Ok(e) => entries.extend(e),
-                Err(e) => eprintln!("[tokemon] Warning: {}: {}", provider.name(), e),
-            }
-        }
-        entries
-    };
+    let mut entries = cache.load_all_entries()?;
+    entries = dedup::deduplicate(entries);
+    entries.sort_by_key(|e| e.timestamp);
+    Ok(entries)
+}
 
-    all_entries = dedup::deduplicate(all_entries);
-    all_entries.sort_by_key(|e| e.timestamp);
-    Ok(all_entries)
+fn resolve_provider_refs<'a>(
+    registry: &'a ProviderRegistry,
+    filter: &[String],
+) -> anyhow::Result<Vec<&'a dyn provider::Provider>> {
+    if filter.is_empty() {
+        return Ok(registry.available());
+    }
+
+    filter
+        .iter()
+        .map(|name| {
+            registry
+                .get(name)
+                .ok_or_else(|| error::TokemonError::ProviderNotFound(name.clone()).into())
+        })
+        .collect()
+}
+
+fn parse_all_directly(
+    providers: &[&dyn provider::Provider],
+) -> anyhow::Result<Vec<types::UsageEntry>> {
+    let mut entries = Vec::new();
+    for provider in providers {
+        match provider.parse_all() {
+            Ok(e) => entries.extend(e),
+            Err(e) => eprintln!("[tokemon] Warning: {}: {}", provider.name(), e),
+        }
+    }
+    entries = dedup::deduplicate(entries);
+    entries.sort_by_key(|e| e.timestamp);
+    Ok(entries)
 }

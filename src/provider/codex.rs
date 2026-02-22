@@ -61,10 +61,7 @@ impl super::Provider for CodexProvider {
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
 
-        let session_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
+        let session_id = parse_utils::extract_session_id(path);
 
         // State machine: track current model from turn_context lines
         let mut current_model: Option<String> = None;
