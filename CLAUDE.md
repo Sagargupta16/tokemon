@@ -2,34 +2,18 @@
 
 ## Build
 
-Rust 1.83+ required. On this machine, `cargo build` must run from **outside the OneDrive-synced directory** (OneDrive filesystem hooks kill build script binaries). Use `~/tmp/` as the build directory:
+Rust 1.83+ required. Build from the symlinked directory (`~/code/tokenusage`), which avoids OneDrive filesystem hook issues:
 
 ```bash
-# One-time: copy source and build
-cp -r . ~/tmp/tokemon-build
-cd ~/tmp/tokemon-build
+cd ~/code/tokenusage
 cargo build --release
 cp target/release/tokemon ~/.local/bin/tokemon
-
-# Clean up
-rm -rf ~/tmp/tokemon-build
-```
-
-Alternatively, build inside Docker:
-
-```bash
-docker run --rm \
-  -v $(pwd):/app -w /app \
-  -v /tmp/ca-bundle.pem:/etc/ssl/certs/ca-certificates.crt:ro \
-  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-  -e CARGO_HTTP_CAINFO=/etc/ssl/certs/ca-certificates.crt \
-  tokemon-dev cargo build --release
 ```
 
 ## Test
 
 ```bash
-cd ~/tmp/tokemon-build && cargo test
+cd ~/code/tokenusage && cargo test
 ```
 
 ## Git

@@ -54,6 +54,10 @@ pub struct Cli {
     /// Sort order: asc (oldest first) or desc (newest first)
     #[arg(short = 'o', long, global = true, value_enum)]
     pub order: Option<SortOrder>,
+
+    /// Force re-discovery of files (ignore cache freshness)
+    #[arg(long, global = true)]
+    pub refresh: bool,
 }
 
 impl Cli {

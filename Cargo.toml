@@ -36,5 +36,8 @@ toml = "0.8"
 # Cache
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Terminal detection
+terminal_size = "0.4"
+
 # HTTP (for pricing data fetch)
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "native-tls-vendored"] }

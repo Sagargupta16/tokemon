@@ -1,53 +1,38 @@
-use std::collections::BTreeSet;
-
+use tabled::builder::Builder;
 use tabled::settings::object::Columns;
 use tabled::settings::{Alignment, Modify, Style};
 use tabled::{Table, Tabled};
 
 use crate::types::Report;
 
-/// Breakdown mode: one row per model per date
-#[derive(Tabled)]
-struct BreakdownRow {
-    #[tabled(rename = "Date")]
-    date: String,
-    #[tabled(rename = "Provider")]
-    provider: String,
-    #[tabled(rename = "Model")]
-    model: String,
-    #[tabled(rename = "Input")]
-    input: String,
-    #[tabled(rename = "Output")]
-    output: String,
-    #[tabled(rename = "Cache Write")]
-    cache_write: String,
-    #[tabled(rename = "Cache Read")]
-    cache_read: String,
-    #[tabled(rename = "Total Tokens")]
-    total_tokens: String,
-    #[tabled(rename = "Cost")]
-    cost: String,
-}
+/// Determine which optional columns are visible based on terminal width.
+/// Returns (show_input, show_output, show_cache_write, show_cache_read).
+/// Total Tokens and Cost are always shown.
+#[must_use]
+fn visible_columns(extra_fixed_cols: usize) -> (bool, bool, bool, bool) {
+    let width = terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(120);
 
-/// Compact mode: one row per date 
-#[derive(Tabled)]
-struct CompactRow {
-    #[tabled(rename = "Date")]
-    date: String,
-    #[tabled(rename = "Models")]
-    models: String,
-    #[tabled(rename = "Input")]
-    input: String,
-    #[tabled(rename = "Output")]
-    output: String,
-    #[tabled(rename = "Cache Write")]
-    cache_write: String,
-    #[tabled(rename = "Cache Read")]
-    cache_read: String,
-    #[tabled(rename = "Total Tokens")]
-    total_tokens: String,
-    #[tabled(rename = "Cost")]
-    cost: String,
+    // extra_fixed_cols: number of non-data fixed columns (Date, Model/Models)
+    // Data columns at full width: Input, Output, Cache Write, Cache Read, Total, Cost
+    // We always keep Total + Cost. Progressive hiding order:
+    //   1. Cache Write  (least useful)
+    //   2. Cache Read
+    //   3. Input + Output
+    //
+    // Rough per-column width: ~14 chars each (header + padding + data).
+    // Fixed columns ~12-15 each.
+    let fixed_overhead = extra_fixed_cols * 15 + 2 * 14 + 10; // Date/Model cols + Total + Cost + borders
+
+    let remaining = width.saturating_sub(fixed_overhead);
+
+    let show_cache_write = remaining >= 4 * 14;
+    let show_cache_read = remaining >= 3 * 14;
+    let show_input = remaining >= 2 * 14;
+    let show_output = show_input;
+
+    (show_input, show_output, show_cache_write, show_cache_read)
 }
 
 #[derive(Tabled)]
@@ -76,100 +61,182 @@ pub fn print_table(report: &Report, breakdown: bool) {
 }
 
 fn print_breakdown_table(report: &Report) {
-    let mut rows: Vec<BreakdownRow> = Vec::new();
+    let (show_in, show_out, show_cw, show_cr) = visible_columns(2); // Date + Model
+
+    // Build header
+    let mut header: Vec<String> = vec!["Date".into(), "Model".into()];
+    if show_in {
+        header.push("Input".into());
+    }
+    if show_out {
+        header.push("Output".into());
+    }
+    if show_cw {
+        header.push("Cache Write".into());
+    }
+    if show_cr {
+        header.push("Cache Read".into());
+    }
+    header.push("Total Tokens".into());
+    header.push("Cost".into());
+
+    let first_numeric_col = 2; // columns 0=Date, 1=Model, then numeric
+
+    let mut builder = Builder::default();
+    builder.push_record(header);
 
     for summary in &report.summaries {
-        let date_label = &summary.label;
+        // Date summary row
+        let total = summary.total_input
+            + summary.total_output
+            + summary.total_cache_creation()
+            + summary.total_cache_read()
+            + summary.total_thinking;
+
+        let mut row: Vec<String> = vec![summary.label.clone(), String::new()];
+        if show_in {
+            row.push(format_tokens(summary.total_input));
+        }
+        if show_out {
+            row.push(format_tokens(summary.total_output));
+        }
+        if show_cw {
+            row.push(format_tokens(summary.total_cache_creation()));
+        }
+        if show_cr {
+            row.push(format_tokens(summary.total_cache_read()));
+        }
+        row.push(format_tokens(total));
+        row.push(format_cost(summary.total_cost));
+        builder.push_record(row);
+
+        // Indented model rows
         for model in &summary.models {
-            let total = model.input_tokens
+            let model_total = model.input_tokens
                 + model.output_tokens
                 + model.cache_read_tokens
                 + model.cache_creation_tokens
                 + model.thinking_tokens;
-            rows.push(BreakdownRow {
-                date: date_label.clone(),
-                provider: model.provider.clone(),
-                model: shorten_model(&model.model),
-                input: format_tokens(model.input_tokens),
-                output: format_tokens(model.output_tokens),
-                cache_write: format_tokens(model.cache_creation_tokens),
-                cache_read: format_tokens(model.cache_read_tokens),
-                total_tokens: format_tokens(total),
-                cost: format_cost(model.cost_usd),
-            });
+
+            let mut row: Vec<String> =
+                vec![String::new(), format!("  {}", shorten_model(&model.model))];
+            if show_in {
+                row.push(format_tokens(model.input_tokens));
+            }
+            if show_out {
+                row.push(format_tokens(model.output_tokens));
+            }
+            if show_cw {
+                row.push(format_tokens(model.cache_creation_tokens));
+            }
+            if show_cr {
+                row.push(format_tokens(model.cache_read_tokens));
+            }
+            row.push(format_tokens(model_total));
+            row.push(format_cost(model.cost_usd));
+            builder.push_record(row);
         }
     }
 
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
-    rows.push(BreakdownRow {
-        date: "TOTAL".to_string(),
-        provider: String::new(),
-        model: String::new(),
-        input: format_tokens(gi),
-        output: format_tokens(go),
-        cache_write: format_tokens(gcw),
-        cache_read: format_tokens(gcr),
-        total_tokens: format_tokens(gt),
-        cost: format_cost(report.total_cost),
-    });
+    let mut row: Vec<String> = vec!["TOTAL".into(), String::new()];
+    if show_in {
+        row.push(format_tokens(gi));
+    }
+    if show_out {
+        row.push(format_tokens(go));
+    }
+    if show_cw {
+        row.push(format_tokens(gcw));
+    }
+    if show_cr {
+        row.push(format_tokens(gcr));
+    }
+    row.push(format_tokens(gt));
+    row.push(format_cost(report.total_cost));
+    builder.push_record(row);
 
-    let table = Table::new(&rows)
+    let table = builder
+        .build()
         .with(Style::rounded())
-        .with(Modify::new(Columns::new(3..)).with(Alignment::right()))
+        .with(Modify::new(Columns::new(first_numeric_col..)).with(Alignment::right()))
         .to_string();
     println!("{}", table);
 }
 
 fn print_compact_table(report: &Report) {
-    let mut rows: Vec<CompactRow> = Vec::new();
+    let (show_in, show_out, show_cw, show_cr) = visible_columns(1); // Date only
+
+    // Build header — no Models column in compact mode
+    let mut header: Vec<String> = vec!["Date".into()];
+    if show_in {
+        header.push("Input".into());
+    }
+    if show_out {
+        header.push("Output".into());
+    }
+    if show_cw {
+        header.push("Cache Write".into());
+    }
+    if show_cr {
+        header.push("Cache Read".into());
+    }
+    header.push("Total Tokens".into());
+    header.push("Cost".into());
+
+    let first_numeric_col = 1;
+
+    let mut builder = Builder::default();
+    builder.push_record(header);
 
     for summary in &report.summaries {
-        // Collect unique model short names
-        let model_names: BTreeSet<String> = summary
-            .models
-            .iter()
-            .map(|m| shorten_model(&m.model))
-            .collect();
-        let models_str = model_names
-            .iter()
-            .map(|m| format!("- {}", m))
-            .collect::<Vec<_>>()
-            .join("\n");
-
         let total = summary.total_input
             + summary.total_output
             + summary.total_cache
             + summary.total_thinking;
 
-        rows.push(CompactRow {
-            date: summary.label.clone(),
-            models: models_str,
-            input: format_tokens(summary.total_input),
-            output: format_tokens(summary.total_output),
-            cache_write: format_tokens(summary.total_cache_creation()),
-            cache_read: format_tokens(summary.total_cache_read()),
-            total_tokens: format_tokens(total),
-            cost: format_cost(summary.total_cost),
-        });
+        let mut row: Vec<String> = vec![summary.label.clone()];
+        if show_in {
+            row.push(format_tokens(summary.total_input));
+        }
+        if show_out {
+            row.push(format_tokens(summary.total_output));
+        }
+        if show_cw {
+            row.push(format_tokens(summary.total_cache_creation()));
+        }
+        if show_cr {
+            row.push(format_tokens(summary.total_cache_read()));
+        }
+        row.push(format_tokens(total));
+        row.push(format_cost(summary.total_cost));
+        builder.push_record(row);
     }
 
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
-    rows.push(CompactRow {
-        date: "TOTAL".to_string(),
-        models: String::new(),
-        input: format_tokens(gi),
-        output: format_tokens(go),
-        cache_write: format_tokens(gcw),
-        cache_read: format_tokens(gcr),
-        total_tokens: format_tokens(gt),
-        cost: format_cost(report.total_cost),
-    });
+    let mut row: Vec<String> = vec!["TOTAL".into()];
+    if show_in {
+        row.push(format_tokens(gi));
+    }
+    if show_out {
+        row.push(format_tokens(go));
+    }
+    if show_cw {
+        row.push(format_tokens(gcw));
+    }
+    if show_cr {
+        row.push(format_tokens(gcr));
+    }
+    row.push(format_tokens(gt));
+    row.push(format_cost(report.total_cost));
+    builder.push_record(row);
 
-    let table = Table::new(&rows)
+    let table = builder
+        .build()
         .with(Style::rounded())
-        .with(Modify::new(Columns::new(2..)).with(Alignment::right()))
+        .with(Modify::new(Columns::new(first_numeric_col..)).with(Alignment::right()))
         .to_string();
     println!("{}", table);
 }
@@ -359,5 +426,13 @@ mod tests {
         assert_eq!(format_cost(0.0), "$0.00");
         assert_eq!(format_cost(1.50), "$1.50");
         assert_eq!(format_cost(0.005), "$0.0050");
+    }
+
+    #[test]
+    fn test_visible_columns_wide_terminal() {
+        // With a wide terminal, all columns should be visible
+        // The function reads terminal_size internally, so we test the logic conceptually.
+        // At minimum, ensure the function doesn't panic.
+        let _ = visible_columns(2);
     }
 }

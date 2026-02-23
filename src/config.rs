@@ -81,7 +81,7 @@ impl Default for Config {
         Self {
             default_command: "daily".to_string(),
             default_format: "table".to_string(),
-            breakdown: true,
+            breakdown: false,
             no_cost: false,
             offline: false,
             providers: Vec::new(),

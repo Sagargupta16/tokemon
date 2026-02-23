@@ -84,7 +84,7 @@ fn load_and_price(
 ) -> anyhow::Result<Vec<types::UsageEntry>> {
     let registry = ProviderRegistry::new();
     let filter = resolve_providers(cli, config);
-    let mut entries = parse_with_cache(&registry, filter)?;
+    let mut entries = parse_with_cache(&registry, filter, cli.refresh)?;
 
     if !(cli.no_cost || config.no_cost) {
         let offline = force_offline || cli.offline || config.offline;
@@ -262,6 +262,7 @@ fn format_provider_count(count: usize) -> String {
 fn parse_with_cache(
     registry: &ProviderRegistry,
     filter: &[String],
+    force_refresh: bool,
 ) -> anyhow::Result<Vec<types::UsageEntry>> {
     let cache = Cache::open()
         .map_err(|e| {
@@ -275,6 +276,14 @@ fn parse_with_cache(
     let Some(cache) = cache else {
         return parse_all_directly(&providers);
     };
+
+    // If cache is fresh and no --refresh flag, skip discovery entirely
+    if !force_refresh && !cache.should_rediscover(30) {
+        let mut entries = cache.load_all_entries()?;
+        entries = dedup::deduplicate(entries);
+        entries.sort_by_key(|e| e.timestamp);
+        return Ok(entries);
+    }
 
     let cached_mtimes = cache.cached_file_mtimes();
 
@@ -317,6 +326,8 @@ fn parse_with_cache(
             eprintln!("[tokemon] Warning: cache commit failed: {}", e);
         }
     }
+
+    cache.set_last_discovery();
 
     let mut entries = cache.load_all_entries()?;
     entries = dedup::deduplicate(entries);

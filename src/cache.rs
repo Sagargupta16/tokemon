@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Row};
@@ -53,7 +53,11 @@ impl Cache {
             );
             CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_entries(timestamp);
             CREATE INDEX IF NOT EXISTS idx_provider ON usage_entries(provider);
-            CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime);",
+            CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime);
+            CREATE TABLE IF NOT EXISTS cache_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
         )?;
         Ok(())
     }
@@ -143,6 +147,45 @@ impl Cache {
         }
 
         Ok(())
+    }
+
+    /// Check whether file discovery should be skipped because
+    /// the cache was populated recently (within `max_age_secs`).
+    #[must_use]
+    pub fn should_rediscover(&self, max_age_secs: u64) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let last: Option<u64> = self
+            .conn
+            .query_row(
+                "SELECT value FROM cache_meta WHERE key = 'last_discovery_at'",
+                [],
+                |row| {
+                    let v: String = row.get(0)?;
+                    Ok(v.parse::<u64>().unwrap_or(0))
+                },
+            )
+            .ok();
+
+        match last {
+            Some(ts) => now.saturating_sub(ts) > max_age_secs,
+            None => true,
+        }
+    }
+
+    /// Record the current time as the last discovery timestamp.
+    pub fn set_last_discovery(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('last_discovery_at', ?1)",
+            params![now.to_string()],
+        );
     }
 
     /// Single source of truth for mapping a SQLite row to a UsageEntry.
