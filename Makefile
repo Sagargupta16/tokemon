@@ -1,8 +1,6 @@
-.PHONY: build test run clean docker-build docker-run install help
+.PHONY: build test clean install help lint fmt fmt-check ci
 
 BINARY  := target/release/tokemon
-IMAGE   := tokemon
-VERSION := $(shell grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -19,15 +17,6 @@ install: build ## Install to ~/.cargo/bin
 
 clean: ## Remove build artifacts
 	cargo clean
-
-docker-build: ## Build Docker image (multi-stage, produces minimal runtime image)
-	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
-
-docker-run: ## Run via Docker with provider data mounted (pass ARGS="...")
-	@docker run --rm \
-		-v $(HOME)/.claude:/root/.claude:ro \
-		-v $(HOME)/.cache/tokemon:/root/.cache/tokemon:ro \
-		$(IMAGE):latest $(ARGS)
 
 lint: ## Run clippy lints
 	cargo clippy -- -W clippy::pedantic -A clippy::module_name_repetitions
