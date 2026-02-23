@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{params, Connection, Row, types::Value};
+use rusqlite::{params, types::Value, Connection, Row};
 
 use crate::paths;
 use crate::types::Record;
@@ -81,9 +81,10 @@ impl Cache {
     /// Get all cached (file, mtime) pairs in one query for bulk staleness checking.
     pub fn cached_file_mtimes(&self) -> std::collections::HashMap<String, i64> {
         let mut map = std::collections::HashMap::new();
-        let Ok(mut stmt) = self.conn.prepare(
-            "SELECT DISTINCT source_file, source_mtime FROM usage_entries",
-        ) else {
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT DISTINCT source_file, source_mtime FROM usage_entries")
+        else {
             return map;
         };
         let Ok(rows) = stmt.query_map([], |row| {

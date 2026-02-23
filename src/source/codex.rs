@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
-use crate::timestamp;
 use crate::paths;
+use crate::timestamp;
 use crate::types::Record;
 
 pub struct CodexSource {
@@ -125,7 +125,11 @@ impl super::Source for CodexSource {
                         None => continue,
                     };
 
-                    let timestamp = match parsed.timestamp.as_deref().and_then(timestamp::parse_timestamp) {
+                    let timestamp = match parsed
+                        .timestamp
+                        .as_deref()
+                        .and_then(timestamp::parse_timestamp)
+                    {
                         Some(dt) => dt,
                         None => continue,
                     };
@@ -136,7 +140,9 @@ impl super::Source for CodexSource {
                     let actual_input = if cached > raw_input {
                         eprintln!(
                             "[tokemon] Warning: cached tokens ({}) > input tokens ({}) in {}",
-                            cached, raw_input, path.display()
+                            cached,
+                            raw_input,
+                            path.display()
                         );
                         0
                     } else {

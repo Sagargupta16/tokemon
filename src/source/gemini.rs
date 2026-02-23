@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
-use crate::timestamp;
 use crate::paths;
+use crate::timestamp;
 use crate::types::Record;
 
 pub struct GeminiSource {
@@ -58,8 +58,14 @@ impl super::Source for GeminiSource {
     fn discover_files(&self) -> Vec<PathBuf> {
         // Check both patterns
         let patterns = [
-            self.base_dir.join("tmp/**/chats/session-*.json").display().to_string(),
-            self.base_dir.join("tmp/**/session.json").display().to_string(),
+            self.base_dir
+                .join("tmp/**/chats/session-*.json")
+                .display()
+                .to_string(),
+            self.base_dir
+                .join("tmp/**/session.json")
+                .display()
+                .to_string(),
         ];
 
         let mut files = Vec::new();
@@ -73,12 +79,11 @@ impl super::Source for GeminiSource {
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
         let content = fs::read_to_string(path).map_err(TokemonError::Io)?;
-        let session: GeminiSession = serde_json::from_str(&content).map_err(|e| {
-            TokemonError::JsonParse {
+        let session: GeminiSession =
+            serde_json::from_str(&content).map_err(|e| TokemonError::JsonParse {
                 file: path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
 
         let Some(messages) = session.messages else {
             return Ok(Vec::new());

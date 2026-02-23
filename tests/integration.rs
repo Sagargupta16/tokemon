@@ -13,7 +13,10 @@ fn test_claude_code_parse_fixture() {
 
     // First entry
     assert_eq!(entries[0].provider, "claude-code");
-    assert_eq!(entries[0].model.as_deref(), Some("claude-opus-4-1-20250805"));
+    assert_eq!(
+        entries[0].model.as_deref(),
+        Some("claude-opus-4-1-20250805")
+    );
     assert_eq!(entries[0].input_tokens, 100);
     assert_eq!(entries[0].output_tokens, 50);
     assert_eq!(entries[0].cache_creation_tokens, 500);
@@ -27,7 +30,10 @@ fn test_claude_code_parse_fixture() {
     assert_eq!(entries[1].cache_read_tokens, 400);
 
     // Third entry - different model, different day
-    assert_eq!(entries[2].model.as_deref(), Some("claude-sonnet-4-20250514"));
+    assert_eq!(
+        entries[2].model.as_deref(),
+        Some("claude-sonnet-4-20250514")
+    );
     assert_eq!(entries[2].input_tokens, 50);
 }
 

@@ -21,8 +21,7 @@ pub fn aggregate_weekly(entries: &[Record]) -> Vec<DailySummary> {
         let year = iso.year();
         let week = iso.week();
         // Use Monday of the ISO week as the representative date
-        let monday = NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon)
-            .unwrap_or(date);
+        let monday = NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon).unwrap_or(date);
         let sunday = monday + chrono::Duration::days(6);
         let label = format!(
             "{}-W{:02} ({} - {})",
@@ -62,10 +61,7 @@ pub fn filter_by_date(
         .collect()
 }
 
-fn group_by_date<F>(
-    entries: &[Record],
-    key_fn: F,
-) -> BTreeMap<NaiveDate, (String, Vec<&Record>)>
+fn group_by_date<F>(entries: &[Record], key_fn: F) -> BTreeMap<NaiveDate, (String, Vec<&Record>)>
 where
     F: Fn(&Record) -> (NaiveDate, String),
 {
@@ -81,9 +77,7 @@ where
     grouped
 }
 
-fn build_summaries(
-    grouped: BTreeMap<NaiveDate, (String, Vec<&Record>)>,
-) -> Vec<DailySummary> {
+fn build_summaries(grouped: BTreeMap<NaiveDate, (String, Vec<&Record>)>) -> Vec<DailySummary> {
     let mut summaries = Vec::new();
 
     for (date, (label, entries)) in grouped {

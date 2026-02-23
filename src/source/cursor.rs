@@ -55,7 +55,11 @@ impl super::Source for CursorSource {
                 Some(Record {
                     timestamp,
                     provider: "cursor".to_string(),
-                    model: if model.is_empty() { None } else { Some(model.to_string()) },
+                    model: if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.to_string())
+                    },
                     input_tokens: fields[2].trim().parse().unwrap_or(0),
                     output_tokens: fields[3].trim().parse().unwrap_or(0),
                     cache_read_tokens: 0,

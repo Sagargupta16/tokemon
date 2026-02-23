@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
-use crate::timestamp;
 use crate::paths;
+use crate::timestamp;
 use crate::types::Record;
 
 pub struct QwenSource {
@@ -57,7 +57,11 @@ impl super::Source for QwenSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("tmp/**/session.json").display().to_string();
+        let pattern = self
+            .base_dir
+            .join("tmp/**/session.json")
+            .display()
+            .to_string();
         glob::glob(&pattern)
             .map(|paths| paths.filter_map(|p| p.ok()).collect())
             .unwrap_or_default()

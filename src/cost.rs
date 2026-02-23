@@ -54,7 +54,10 @@ impl PricingEngine {
                 Self::parse_pricing(&data)
             }
             Err(e) => {
-                eprintln!("[tokemon] Warning: failed to fetch pricing: {}; costs will be $0.00", e);
+                eprintln!(
+                    "[tokemon] Warning: failed to fetch pricing: {}; costs will be $0.00",
+                    e
+                );
                 Ok(Self {
                     models: HashMap::new(),
                 })

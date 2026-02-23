@@ -140,7 +140,10 @@ impl Config {
     fn validated(mut self) -> Self {
         let defaults = Self::default();
 
-        if !matches!(self.default_command.as_str(), "daily" | "weekly" | "monthly") {
+        if !matches!(
+            self.default_command.as_str(),
+            "daily" | "weekly" | "monthly"
+        ) {
             eprintln!(
                 "[tokemon] Warning: invalid default_command '{}'; using '{}'",
                 self.default_command, defaults.default_command

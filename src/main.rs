@@ -88,8 +88,14 @@ fn load_and_price(
     let filter = resolve_providers(cli, config);
     let force_refresh = cli.refresh || config.refresh;
     let force_reparse = cli.reparse || config.reparse;
-    let mut entries =
-        parse_with_cache(&registry, filter, force_refresh, force_reparse, cli.since, cli.until)?;
+    let mut entries = parse_with_cache(
+        &registry,
+        filter,
+        force_refresh,
+        force_reparse,
+        cli.since,
+        cli.until,
+    )?;
 
     if !(cli.no_cost || config.no_cost) {
         let offline = force_offline || cli.offline || config.offline;
@@ -241,7 +247,11 @@ fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 // --- Formatting helpers ---
 
 fn format_budget_short(spent: f64, limit: f64) -> String {
-    let pct = if limit > 0.0 { spent / limit * 100.0 } else { 0.0 };
+    let pct = if limit > 0.0 {
+        spent / limit * 100.0
+    } else {
+        0.0
+    };
     if pct > 100.0 {
         format!("OVER ${:.0} limit", limit)
     } else {
@@ -274,7 +284,10 @@ fn parse_with_cache(
 ) -> anyhow::Result<Vec<types::Record>> {
     let cache = Cache::open()
         .map_err(|e| {
-            eprintln!("[tokemon] Warning: cache unavailable ({}); parsing all files", e);
+            eprintln!(
+                "[tokemon] Warning: cache unavailable ({}); parsing all files",
+                e
+            );
             e
         })
         .ok();
@@ -336,7 +349,11 @@ fn parse_with_cache(
                     }
                 }
                 Err(e) => {
-                    eprintln!("[tokemon] Warning: failed to parse {}: {}", file.display(), e);
+                    eprintln!(
+                        "[tokemon] Warning: failed to parse {}: {}",
+                        file.display(),
+                        e
+                    );
                 }
             }
         }
@@ -376,9 +393,7 @@ fn resolve_source_refs<'a>(
         .collect()
 }
 
-fn parse_all_directly(
-    providers: &[&dyn source::Source],
-) -> anyhow::Result<Vec<types::Record>> {
+fn parse_all_directly(providers: &[&dyn source::Source]) -> anyhow::Result<Vec<types::Record>> {
     let mut entries = Vec::new();
     for provider in providers {
         match provider.parse_all() {

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
-use crate::timestamp;
 use crate::paths;
+use crate::timestamp;
 use crate::types::Record;
 
 pub struct ClaudeCodeSource {

@@ -18,7 +18,11 @@ pub enum SortOrder {
 }
 
 #[derive(Parser)]
-#[command(name = "tokemon", version, about = "Unified LLM token usage tracking across all providers")]
+#[command(
+    name = "tokemon",
+    version,
+    about = "Unified LLM token usage tracking across all providers"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

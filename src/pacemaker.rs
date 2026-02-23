@@ -17,14 +17,14 @@ pub fn evaluate(
     });
 
     let weekly = budget.weekly.map(|limit| {
-        let week_start = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+        let week_start =
+            today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
         let spent = sum_cost_since(entries, week_start);
         (spent, limit)
     });
 
     let monthly = budget.monthly.map(|limit| {
-        let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
-            .unwrap_or(today);
+        let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
         let spent = sum_cost_since(entries, month_start);
         (spent, limit)
     });

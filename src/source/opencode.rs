@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Result, TokemonError};
-use crate::timestamp;
 use crate::paths;
+use crate::timestamp;
 use crate::types::Record;
 
 pub struct OpenCodeSource {
@@ -83,7 +83,11 @@ impl super::Source for OpenCodeSource {
             None => return Ok(Vec::new()),
         };
 
-        let timestamp = match msg.timestamp.as_deref().and_then(timestamp::parse_timestamp) {
+        let timestamp = match msg
+            .timestamp
+            .as_deref()
+            .and_then(timestamp::parse_timestamp)
+        {
             Some(dt) => dt,
             None => return Ok(Vec::new()),
         };

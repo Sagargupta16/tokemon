@@ -25,17 +25,31 @@ fn ansi(code: &str, s: &str, color: bool) -> String {
     }
 }
 
-fn bold(s: &str, c: bool) -> String { ansi("1", s, c) }
-fn dim(s: &str, c: bool) -> String { ansi("2", s, c) }
-fn cyan_bold(s: &str, c: bool) -> String { ansi("1;36", s, c) }
-fn green(s: &str, c: bool) -> String { ansi("32", s, c) }
-fn yellow(s: &str, c: bool) -> String { ansi("33", s, c) }
-fn red(s: &str, c: bool) -> String { ansi("31", s, c) }
+fn bold(s: &str, c: bool) -> String {
+    ansi("1", s, c)
+}
+fn dim(s: &str, c: bool) -> String {
+    ansi("2", s, c)
+}
+fn cyan_bold(s: &str, c: bool) -> String {
+    ansi("1;36", s, c)
+}
+fn green(s: &str, c: bool) -> String {
+    ansi("32", s, c)
+}
+fn yellow(s: &str, c: bool) -> String {
+    ansi("33", s, c)
+}
+fn red(s: &str, c: bool) -> String {
+    ansi("31", s, c)
+}
 
 /// Format a cost value with color coding.
 fn format_cost_styled(cost: f64, color: bool) -> String {
     let s = format_cost(cost);
-    if !color { return s; }
+    if !color {
+        return s;
+    }
     if cost == 0.0 {
         dim(&s, true)
     } else if cost < 1.0 {
@@ -59,7 +73,9 @@ fn format_tokens_styled(n: u64, color: bool) -> String {
 
 /// Apply bold to every element in a row.
 fn bold_row(row: &mut [String], color: bool) {
-    if !color { return; }
+    if !color {
+        return;
+    }
     for cell in row.iter_mut() {
         if !cell.is_empty() {
             *cell = bold(cell, true);
@@ -69,7 +85,9 @@ fn bold_row(row: &mut [String], color: bool) {
 
 /// Style each element of the header row.
 fn style_header(header: &mut [String], color: bool) {
-    if !color { return; }
+    if !color {
+        return;
+    }
     for cell in header.iter_mut() {
         *cell = cyan_bold(cell, true);
     }
@@ -133,10 +151,18 @@ fn print_breakdown_table(report: &Report) {
     let (show_in, show_out, show_cw, show_cr) = visible_columns(2);
 
     let mut header: Vec<String> = vec!["Date".into(), "Model".into()];
-    if show_in { header.push("Input".into()); }
-    if show_out { header.push("Output".into()); }
-    if show_cw { header.push("Cache Write".into()); }
-    if show_cr { header.push("Cache Read".into()); }
+    if show_in {
+        header.push("Input".into());
+    }
+    if show_out {
+        header.push("Output".into());
+    }
+    if show_cw {
+        header.push("Cache Write".into());
+    }
+    if show_cr {
+        header.push("Cache Read".into());
+    }
     header.push("Total Tokens".into());
     header.push("Cost".into());
     style_header(&mut header, color);
@@ -155,10 +181,18 @@ fn print_breakdown_table(report: &Report) {
             + summary.total_thinking;
 
         let mut row: Vec<String> = vec![summary.label.clone(), String::new()];
-        if show_in { row.push(format_tokens_styled(summary.total_input, color)); }
-        if show_out { row.push(format_tokens_styled(summary.total_output, color)); }
-        if show_cw { row.push(format_tokens_styled(summary.total_cache_creation(), color)); }
-        if show_cr { row.push(format_tokens_styled(summary.total_cache_read(), color)); }
+        if show_in {
+            row.push(format_tokens_styled(summary.total_input, color));
+        }
+        if show_out {
+            row.push(format_tokens_styled(summary.total_output, color));
+        }
+        if show_cw {
+            row.push(format_tokens_styled(summary.total_cache_creation(), color));
+        }
+        if show_cr {
+            row.push(format_tokens_styled(summary.total_cache_read(), color));
+        }
         row.push(format_tokens_styled(total, color));
         row.push(format_cost_styled(summary.total_cost, color));
         bold_row(&mut row, color);
@@ -174,10 +208,18 @@ fn print_breakdown_table(report: &Report) {
 
             let mut row: Vec<String> =
                 vec![String::new(), format!("  {}", shorten_model(&model.model))];
-            if show_in { row.push(format_tokens_styled(model.input_tokens, color)); }
-            if show_out { row.push(format_tokens_styled(model.output_tokens, color)); }
-            if show_cw { row.push(format_tokens_styled(model.cache_creation_tokens, color)); }
-            if show_cr { row.push(format_tokens_styled(model.cache_read_tokens, color)); }
+            if show_in {
+                row.push(format_tokens_styled(model.input_tokens, color));
+            }
+            if show_out {
+                row.push(format_tokens_styled(model.output_tokens, color));
+            }
+            if show_cw {
+                row.push(format_tokens_styled(model.cache_creation_tokens, color));
+            }
+            if show_cr {
+                row.push(format_tokens_styled(model.cache_read_tokens, color));
+            }
             row.push(format_tokens_styled(model_total, color));
             row.push(format_cost_styled(model.cost_usd, color));
             builder.push_record(row);
@@ -187,10 +229,18 @@ fn print_breakdown_table(report: &Report) {
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
     let mut row: Vec<String> = vec!["TOTAL".into(), String::new()];
-    if show_in { row.push(format_tokens(gi)); }
-    if show_out { row.push(format_tokens(go)); }
-    if show_cw { row.push(format_tokens(gcw)); }
-    if show_cr { row.push(format_tokens(gcr)); }
+    if show_in {
+        row.push(format_tokens(gi));
+    }
+    if show_out {
+        row.push(format_tokens(go));
+    }
+    if show_cw {
+        row.push(format_tokens(gcw));
+    }
+    if show_cr {
+        row.push(format_tokens(gcr));
+    }
     row.push(format_tokens(gt));
     row.push(format_cost(report.total_cost));
     bold_row(&mut row, color);
@@ -209,10 +259,18 @@ fn print_compact_table(report: &Report) {
     let (show_in, show_out, show_cw, show_cr) = visible_columns(1);
 
     let mut header: Vec<String> = vec!["Date".into()];
-    if show_in { header.push("Input".into()); }
-    if show_out { header.push("Output".into()); }
-    if show_cw { header.push("Cache Write".into()); }
-    if show_cr { header.push("Cache Read".into()); }
+    if show_in {
+        header.push("Input".into());
+    }
+    if show_out {
+        header.push("Output".into());
+    }
+    if show_cw {
+        header.push("Cache Write".into());
+    }
+    if show_cr {
+        header.push("Cache Read".into());
+    }
     header.push("Total Tokens".into());
     header.push("Cost".into());
     style_header(&mut header, color);
@@ -229,10 +287,18 @@ fn print_compact_table(report: &Report) {
             + summary.total_thinking;
 
         let mut row: Vec<String> = vec![summary.label.clone()];
-        if show_in { row.push(format_tokens_styled(summary.total_input, color)); }
-        if show_out { row.push(format_tokens_styled(summary.total_output, color)); }
-        if show_cw { row.push(format_tokens_styled(summary.total_cache_creation(), color)); }
-        if show_cr { row.push(format_tokens_styled(summary.total_cache_read(), color)); }
+        if show_in {
+            row.push(format_tokens_styled(summary.total_input, color));
+        }
+        if show_out {
+            row.push(format_tokens_styled(summary.total_output, color));
+        }
+        if show_cw {
+            row.push(format_tokens_styled(summary.total_cache_creation(), color));
+        }
+        if show_cr {
+            row.push(format_tokens_styled(summary.total_cache_read(), color));
+        }
         row.push(format_tokens_styled(total, color));
         row.push(format_cost_styled(summary.total_cost, color));
         builder.push_record(row);
@@ -241,10 +307,18 @@ fn print_compact_table(report: &Report) {
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
     let mut row: Vec<String> = vec!["TOTAL".into()];
-    if show_in { row.push(format_tokens(gi)); }
-    if show_out { row.push(format_tokens(go)); }
-    if show_cw { row.push(format_tokens(gcw)); }
-    if show_cr { row.push(format_tokens(gcr)); }
+    if show_in {
+        row.push(format_tokens(gi));
+    }
+    if show_out {
+        row.push(format_tokens(go));
+    }
+    if show_cw {
+        row.push(format_tokens(gcw));
+    }
+    if show_cr {
+        row.push(format_tokens(gcr));
+    }
     row.push(format_tokens(gt));
     row.push(format_cost(report.total_cost));
     bold_row(&mut row, color);
@@ -261,13 +335,22 @@ fn print_compact_table(report: &Report) {
 fn grand_totals(report: &Report) -> (u64, u64, u64, u64, u64) {
     let gi: u64 = report.summaries.iter().map(|s| s.total_input).sum();
     let go: u64 = report.summaries.iter().map(|s| s.total_output).sum();
-    let gcw: u64 = report.summaries.iter().map(|s| s.total_cache_creation()).sum();
+    let gcw: u64 = report
+        .summaries
+        .iter()
+        .map(|s| s.total_cache_creation())
+        .sum();
     let gcr: u64 = report.summaries.iter().map(|s| s.total_cache_read()).sum();
     let gth: u64 = report.summaries.iter().map(|s| s.total_thinking).sum();
     (gi, go, gcw, gcr, gi + go + gcw + gcr + gth)
 }
 
-pub fn print_statusline(total_cost: f64, total_tokens: u64, provider_count: usize, period_label: &str) {
+pub fn print_statusline(
+    total_cost: f64,
+    total_tokens: u64,
+    provider_count: usize,
+    period_label: &str,
+) {
     let provider_str = if provider_count == 1 {
         "1 provider".to_string()
     } else {
@@ -283,18 +366,22 @@ pub fn print_statusline(total_cost: f64, total_tokens: u64, provider_count: usiz
     );
 }
 
-pub fn print_budget(daily: Option<(f64, f64)>, weekly: Option<(f64, f64)>, monthly: Option<(f64, f64)>) {
-    let lines = [
-        ("Daily", daily),
-        ("Weekly", weekly),
-        ("Monthly", monthly),
-    ];
+pub fn print_budget(
+    daily: Option<(f64, f64)>,
+    weekly: Option<(f64, f64)>,
+    monthly: Option<(f64, f64)>,
+) {
+    let lines = [("Daily", daily), ("Weekly", weekly), ("Monthly", monthly)];
 
     let mut any = false;
     for (label, budget) in &lines {
         if let Some((spent, limit)) = budget {
             any = true;
-            let pct = if *limit > 0.0 { spent / limit * 100.0 } else { 0.0 };
+            let pct = if *limit > 0.0 {
+                spent / limit * 100.0
+            } else {
+                0.0
+            };
             let bar = progress_bar(pct, 10);
             let status = if pct > 100.0 {
                 "OVER"
@@ -351,16 +438,18 @@ pub fn print_json(report: &Report) {
 pub fn print_discover(providers: &[(&str, &str, bool, String, usize)]) {
     let rows: Vec<DiscoverRow> = providers
         .iter()
-        .map(|(name, display, available, data_dir, file_count)| DiscoverRow {
-            provider: format!("{} ({})", display, name),
-            status: if *available {
-                "Found".to_string()
-            } else {
-                "None".to_string()
+        .map(
+            |(name, display, available, data_dir, file_count)| DiscoverRow {
+                provider: format!("{} ({})", display, name),
+                status: if *available {
+                    "Found".to_string()
+                } else {
+                    "None".to_string()
+                },
+                data_dir: data_dir.clone(),
+                files: format_tokens(*file_count as u64),
             },
-            data_dir: data_dir.clone(),
-            files: format_tokens(*file_count as u64),
-        })
+        )
         .collect();
 
     let table = Table::new(&rows).with(Style::rounded()).to_string();
