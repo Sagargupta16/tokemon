@@ -1,8 +1,18 @@
-# Tokemon
+<p align="center">
+  <h1 align="center">tokemon</h1>
+  <p align="center">
+    an LLM <b>tok</b>en <b>mon</b>itor
+  </p>
+  <p align="center">
+    <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+    <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-orange.svg"></a>
+    <img alt="16 providers" src="https://img.shields.io/badge/providers-16-green.svg">
+  </p>
+</p>
 
-Unified LLM token usage tracking across AI coding tools.
+---
 
-Tokemon reads local session logs from 16 AI coding assistants, estimates costs using the [LiteLLM](https://github.com/BerriAI/litellm) pricing database, and presents daily, weekly, or monthly reports in the terminal or as JSON.
+Unified token usage tracking across all your AI coding tools. tokemon reads local session logs from 16 providers, estimates costs via LiteLLM pricing, and presents daily, weekly, or monthly reports in the terminal or as JSON.
 
 ```
 ╭────────────┬─────────────┬──────────┬─────────┬─────────┬─────────────┬───────────────┬───────────────┬──────────╮
@@ -15,22 +25,24 @@ Tokemon reads local session logs from 16 AI coding assistants, estimates costs u
 ╰────────────┴─────────────┴──────────┴─────────┴─────────┴─────────────┴───────────────┴───────────────┴──────────╯
 ```
 
-## Features
+## Highlights
 
 - **16 providers** — Claude Code, Codex, Gemini CLI, Amp, OpenCode, Cline, Roo Code, Kilo Code, Copilot, Pi Agent, Kimi, Droid, OpenClaw, Qwen Code, Piebald, Cursor
-- **Auto-discovery** — detects installed providers and finds their log directories
-- **Cost estimation** — LiteLLM pricing with three-level model name matching
-- **Flexible reporting** — daily, weekly, or monthly aggregation
+- **Auto-discovery** — detects which tools are installed and finds their log directories automatically
+- **Cost estimation** — LiteLLM pricing database with three-level model name matching
+- **SQLite cache** — parsed data is cached for instant repeated runs and survives log rotation
+- **Budget pacemaker** — set daily/weekly/monthly spending limits with progress tracking
+- **Statusline mode** — compact one-line output for shell prompts and status bars
 - **Two display modes** — detailed per-model breakdown or compact one-row-per-day view
 - **Filtering** — by provider (`-p`), date range (`--since` / `--until`), sort order (`-o`)
 - **JSON output** — `--json` for piping to `jq` or downstream tools
-- **Deduplication** — prevents double-counting from duplicate log entries
 - **Parallel parsing** — multi-threaded file processing with [rayon](https://github.com/rayon-rs/rayon)
 - **Configurable** — persistent preferences via `~/.config/tokemon/config.toml`
+- **Extensible** — adding a new provider is ~20 lines of Rust
 
 ## Installation
 
-### From source (recommended)
+### From source
 
 Requires [Rust 1.83+](https://rustup.rs/).
 
@@ -38,7 +50,6 @@ Requires [Rust 1.83+](https://rustup.rs/).
 git clone https://github.com/mm65x/tokemon.git
 cd tokemon
 cargo build --release
-# Binary is at ./target/release/tokemon
 
 # Optionally install to PATH:
 cargo install --path .
@@ -53,38 +64,13 @@ make docker-build
 make docker-run ARGS="discover"
 ```
 
-## Usage
-
-```
-tokemon [COMMAND] [OPTIONS]
-
-Commands:
-  daily       Show daily usage breakdown (default)
-  weekly      Show weekly usage summary
-  monthly     Show monthly usage summary
-  discover    List auto-detected providers on this machine
-  init        Generate default config file
-
-Options:
-  -d, --display <MODE>    Display mode: breakdown (default) or compact
-  -p, --provider <NAME>   Filter by provider (repeatable)
-      --since <DATE>      Start date (YYYY-MM-DD, inclusive)
-      --until <DATE>      End date (YYYY-MM-DD, inclusive)
-      --no-cost           Skip cost calculation
-      --offline           Use cached pricing only, no network
-  -o, --order <ORDER>     Sort: asc (default) or desc
-      --json              Output as JSON
-  -h, --help              Print help
-  -V, --version           Print version
-```
-
-### Examples
+## Quick Start
 
 ```bash
 # See which providers are installed
 tokemon discover
 
-# Daily report (default)
+# Daily usage report (default)
 tokemon
 
 # Compact view — one row per day
@@ -93,16 +79,40 @@ tokemon -d compact
 # Monthly report, JSON output
 tokemon monthly --json
 
-# Filter to a single provider, no network
-tokemon -p claude-code --offline
+# Budget overview
+tokemon budget
 
-# Last two weeks, newest first
-tokemon --since 2026-02-08 -o desc
+# Statusline for shell prompts
+tokemon statusline
+# $42.17 | 1.2B tok | 1 provider | today
+```
+
+## Usage
+
+```
+tokemon [COMMAND] [OPTIONS]
+
+Commands:
+  daily        Show daily usage breakdown (default)
+  weekly       Show weekly usage summary
+  monthly      Show monthly usage summary
+  statusline   Compact one-line output for shell prompts
+  budget       Show spending vs configured limits
+  discover     List auto-detected providers
+  init         Generate default config file
+
+Options:
+  -d, --display <MODE>    breakdown (default) or compact
+  -p, --provider <NAME>   Filter by provider (repeatable)
+      --since <DATE>      Start date (YYYY-MM-DD)
+      --until <DATE>      End date (YYYY-MM-DD)
+      --no-cost           Skip cost calculation
+      --offline           Use cached pricing only
+  -o, --order <ORDER>     asc (default) or desc
+      --json              Output as JSON
 ```
 
 ## Configuration
-
-Generate a default config file:
 
 ```bash
 tokemon init
@@ -117,6 +127,11 @@ no_cost = false
 offline = false
 sort_order = "asc"
 providers = []
+
+[budget]
+daily = 50.0      # $50/day limit
+weekly = 250.0    # $250/week limit
+monthly = 800.0   # $800/month limit
 
 [columns]
 date = true
@@ -176,6 +191,8 @@ src/
 ├── config.rs            # TOML config loading and validation
 ├── types.rs             # Core data types (UsageEntry, Report, etc.)
 ├── error.rs             # Error types
+├── cache.rs             # SQLite cache layer
+├── pacemaker.rs         # Budget tracking and limits
 ├── parse_utils.rs       # Shared timestamp parsing
 ├── pricing.rs           # LiteLLM cost calculation engine
 ├── aggregator.rs        # Daily/weekly/monthly grouping
@@ -190,8 +207,6 @@ src/
     ├── codex.rs          # Codex CLI parser (state machine)
     └── ...               # One file per provider
 ```
-
-
 
 ## License
 
