@@ -52,3 +52,8 @@ docker run --rm \
 - **Glob patterns**: Use `PathBuf::join("**/*.jsonl").display().to_string()`
 - **Errors**: Skip malformed lines with `continue`, warnings to stderr only
 - **Pure functions**: Annotate with `#[must_use]`
+
+## Content Policy
+
+- **Never reference other tools by name** in README, comments, commit messages, or documentation. No comparisons, no "inspired by X", no "like Y". Tokemon stands on its own.
+- File paths that happen to contain third-party tool names (e.g., `~/.config/tokscale/cursor-cache/`) are acceptable since those are factual filesystem locations.
