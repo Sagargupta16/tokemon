@@ -1,9 +1,83 @@
+use std::io::IsTerminal;
+
 use tabled::builder::Builder;
 use tabled::settings::object::Columns;
 use tabled::settings::{Alignment, Modify, Style};
 use tabled::{Table, Tabled};
 
 use crate::types::Report;
+
+// ---------------------------------------------------------------------------
+// Color helpers
+// ---------------------------------------------------------------------------
+
+/// Whether to emit ANSI color codes. Respects NO_COLOR and non-TTY pipes.
+#[must_use]
+fn use_color() -> bool {
+    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+fn ansi(code: &str, s: &str, color: bool) -> String {
+    if color {
+        format!("\x1b[{}m{}\x1b[0m", code, s)
+    } else {
+        s.to_string()
+    }
+}
+
+fn bold(s: &str, c: bool) -> String { ansi("1", s, c) }
+fn dim(s: &str, c: bool) -> String { ansi("2", s, c) }
+fn cyan_bold(s: &str, c: bool) -> String { ansi("1;36", s, c) }
+fn green(s: &str, c: bool) -> String { ansi("32", s, c) }
+fn yellow(s: &str, c: bool) -> String { ansi("33", s, c) }
+fn red(s: &str, c: bool) -> String { ansi("31", s, c) }
+
+/// Format a cost value with color coding.
+fn format_cost_styled(cost: f64, color: bool) -> String {
+    let s = format_cost(cost);
+    if !color { return s; }
+    if cost == 0.0 {
+        dim(&s, true)
+    } else if cost < 1.0 {
+        green(&s, true)
+    } else if cost < 10.0 {
+        yellow(&s, true)
+    } else {
+        red(&s, true)
+    }
+}
+
+/// Format a token count with dim styling for zeros.
+fn format_tokens_styled(n: u64, color: bool) -> String {
+    let s = format_tokens(n);
+    if color && n == 0 {
+        dim(&s, true)
+    } else {
+        s
+    }
+}
+
+/// Apply bold to every element in a row.
+fn bold_row(row: &mut [String], color: bool) {
+    if !color { return; }
+    for cell in row.iter_mut() {
+        if !cell.is_empty() {
+            *cell = bold(cell, true);
+        }
+    }
+}
+
+/// Style each element of the header row.
+fn style_header(header: &mut [String], color: bool) {
+    if !color { return; }
+    for cell in header.iter_mut() {
+        *cell = cyan_bold(cell, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Responsive columns
+// ---------------------------------------------------------------------------
 
 /// Determine which optional columns are visible based on terminal width.
 /// Returns (show_input, show_output, show_cache_write, show_cache_read).
@@ -14,17 +88,7 @@ fn visible_columns(extra_fixed_cols: usize) -> (bool, bool, bool, bool) {
         .map(|(w, _)| w.0 as usize)
         .unwrap_or(120);
 
-    // extra_fixed_cols: number of non-data fixed columns (Date, Model/Models)
-    // Data columns at full width: Input, Output, Cache Write, Cache Read, Total, Cost
-    // We always keep Total + Cost. Progressive hiding order:
-    //   1. Cache Write  (least useful)
-    //   2. Cache Read
-    //   3. Input + Output
-    //
-    // Rough per-column width: ~14 chars each (header + padding + data).
-    // Fixed columns ~12-15 each.
-    let fixed_overhead = extra_fixed_cols * 15 + 2 * 14 + 10; // Date/Model cols + Total + Cost + borders
-
+    let fixed_overhead = extra_fixed_cols * 15 + 2 * 14 + 10;
     let remaining = width.saturating_sub(fixed_overhead);
 
     let show_cache_write = remaining >= 4 * 14;
@@ -34,6 +98,10 @@ fn visible_columns(extra_fixed_cols: usize) -> (bool, bool, bool, bool) {
 
     (show_input, show_output, show_cache_write, show_cache_read)
 }
+
+// ---------------------------------------------------------------------------
+// Table printing
+// ---------------------------------------------------------------------------
 
 #[derive(Tabled)]
 struct DiscoverRow {
@@ -61,32 +129,25 @@ pub fn print_table(report: &Report, breakdown: bool) {
 }
 
 fn print_breakdown_table(report: &Report) {
-    let (show_in, show_out, show_cw, show_cr) = visible_columns(2); // Date + Model
+    let color = use_color();
+    let (show_in, show_out, show_cw, show_cr) = visible_columns(2);
 
-    // Build header
     let mut header: Vec<String> = vec!["Date".into(), "Model".into()];
-    if show_in {
-        header.push("Input".into());
-    }
-    if show_out {
-        header.push("Output".into());
-    }
-    if show_cw {
-        header.push("Cache Write".into());
-    }
-    if show_cr {
-        header.push("Cache Read".into());
-    }
+    if show_in { header.push("Input".into()); }
+    if show_out { header.push("Output".into()); }
+    if show_cw { header.push("Cache Write".into()); }
+    if show_cr { header.push("Cache Read".into()); }
     header.push("Total Tokens".into());
     header.push("Cost".into());
+    style_header(&mut header, color);
 
-    let first_numeric_col = 2; // columns 0=Date, 1=Model, then numeric
+    let first_numeric_col = 2;
 
     let mut builder = Builder::default();
     builder.push_record(header);
 
     for summary in &report.summaries {
-        // Date summary row
+        // Date summary row — bold
         let total = summary.total_input
             + summary.total_output
             + summary.total_cache_creation()
@@ -94,23 +155,16 @@ fn print_breakdown_table(report: &Report) {
             + summary.total_thinking;
 
         let mut row: Vec<String> = vec![summary.label.clone(), String::new()];
-        if show_in {
-            row.push(format_tokens(summary.total_input));
-        }
-        if show_out {
-            row.push(format_tokens(summary.total_output));
-        }
-        if show_cw {
-            row.push(format_tokens(summary.total_cache_creation()));
-        }
-        if show_cr {
-            row.push(format_tokens(summary.total_cache_read()));
-        }
-        row.push(format_tokens(total));
-        row.push(format_cost(summary.total_cost));
+        if show_in { row.push(format_tokens_styled(summary.total_input, color)); }
+        if show_out { row.push(format_tokens_styled(summary.total_output, color)); }
+        if show_cw { row.push(format_tokens_styled(summary.total_cache_creation(), color)); }
+        if show_cr { row.push(format_tokens_styled(summary.total_cache_read(), color)); }
+        row.push(format_tokens_styled(total, color));
+        row.push(format_cost_styled(summary.total_cost, color));
+        bold_row(&mut row, color);
         builder.push_record(row);
 
-        // Indented model rows
+        // Model sub-rows
         for model in &summary.models {
             let model_total = model.input_tokens
                 + model.output_tokens
@@ -120,20 +174,12 @@ fn print_breakdown_table(report: &Report) {
 
             let mut row: Vec<String> =
                 vec![String::new(), format!("  {}", shorten_model(&model.model))];
-            if show_in {
-                row.push(format_tokens(model.input_tokens));
-            }
-            if show_out {
-                row.push(format_tokens(model.output_tokens));
-            }
-            if show_cw {
-                row.push(format_tokens(model.cache_creation_tokens));
-            }
-            if show_cr {
-                row.push(format_tokens(model.cache_read_tokens));
-            }
-            row.push(format_tokens(model_total));
-            row.push(format_cost(model.cost_usd));
+            if show_in { row.push(format_tokens_styled(model.input_tokens, color)); }
+            if show_out { row.push(format_tokens_styled(model.output_tokens, color)); }
+            if show_cw { row.push(format_tokens_styled(model.cache_creation_tokens, color)); }
+            if show_cr { row.push(format_tokens_styled(model.cache_read_tokens, color)); }
+            row.push(format_tokens_styled(model_total, color));
+            row.push(format_cost_styled(model.cost_usd, color));
             builder.push_record(row);
         }
     }
@@ -141,20 +187,13 @@ fn print_breakdown_table(report: &Report) {
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
     let mut row: Vec<String> = vec!["TOTAL".into(), String::new()];
-    if show_in {
-        row.push(format_tokens(gi));
-    }
-    if show_out {
-        row.push(format_tokens(go));
-    }
-    if show_cw {
-        row.push(format_tokens(gcw));
-    }
-    if show_cr {
-        row.push(format_tokens(gcr));
-    }
+    if show_in { row.push(format_tokens(gi)); }
+    if show_out { row.push(format_tokens(go)); }
+    if show_cw { row.push(format_tokens(gcw)); }
+    if show_cr { row.push(format_tokens(gcr)); }
     row.push(format_tokens(gt));
     row.push(format_cost(report.total_cost));
+    bold_row(&mut row, color);
     builder.push_record(row);
 
     let table = builder
@@ -166,24 +205,17 @@ fn print_breakdown_table(report: &Report) {
 }
 
 fn print_compact_table(report: &Report) {
-    let (show_in, show_out, show_cw, show_cr) = visible_columns(1); // Date only
+    let color = use_color();
+    let (show_in, show_out, show_cw, show_cr) = visible_columns(1);
 
-    // Build header — no Models column in compact mode
     let mut header: Vec<String> = vec!["Date".into()];
-    if show_in {
-        header.push("Input".into());
-    }
-    if show_out {
-        header.push("Output".into());
-    }
-    if show_cw {
-        header.push("Cache Write".into());
-    }
-    if show_cr {
-        header.push("Cache Read".into());
-    }
+    if show_in { header.push("Input".into()); }
+    if show_out { header.push("Output".into()); }
+    if show_cw { header.push("Cache Write".into()); }
+    if show_cr { header.push("Cache Read".into()); }
     header.push("Total Tokens".into());
     header.push("Cost".into());
+    style_header(&mut header, color);
 
     let first_numeric_col = 1;
 
@@ -197,40 +229,25 @@ fn print_compact_table(report: &Report) {
             + summary.total_thinking;
 
         let mut row: Vec<String> = vec![summary.label.clone()];
-        if show_in {
-            row.push(format_tokens(summary.total_input));
-        }
-        if show_out {
-            row.push(format_tokens(summary.total_output));
-        }
-        if show_cw {
-            row.push(format_tokens(summary.total_cache_creation()));
-        }
-        if show_cr {
-            row.push(format_tokens(summary.total_cache_read()));
-        }
-        row.push(format_tokens(total));
-        row.push(format_cost(summary.total_cost));
+        if show_in { row.push(format_tokens_styled(summary.total_input, color)); }
+        if show_out { row.push(format_tokens_styled(summary.total_output, color)); }
+        if show_cw { row.push(format_tokens_styled(summary.total_cache_creation(), color)); }
+        if show_cr { row.push(format_tokens_styled(summary.total_cache_read(), color)); }
+        row.push(format_tokens_styled(total, color));
+        row.push(format_cost_styled(summary.total_cost, color));
         builder.push_record(row);
     }
 
     // Grand totals
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
     let mut row: Vec<String> = vec!["TOTAL".into()];
-    if show_in {
-        row.push(format_tokens(gi));
-    }
-    if show_out {
-        row.push(format_tokens(go));
-    }
-    if show_cw {
-        row.push(format_tokens(gcw));
-    }
-    if show_cr {
-        row.push(format_tokens(gcr));
-    }
+    if show_in { row.push(format_tokens(gi)); }
+    if show_out { row.push(format_tokens(go)); }
+    if show_cw { row.push(format_tokens(gcw)); }
+    if show_cr { row.push(format_tokens(gcr)); }
     row.push(format_tokens(gt));
     row.push(format_cost(report.total_cost));
+    bold_row(&mut row, color);
     builder.push_record(row);
 
     let table = builder
@@ -429,10 +446,26 @@ mod tests {
     }
 
     #[test]
-    fn test_visible_columns_wide_terminal() {
-        // With a wide terminal, all columns should be visible
-        // The function reads terminal_size internally, so we test the logic conceptually.
-        // At minimum, ensure the function doesn't panic.
+    fn test_visible_columns() {
         let _ = visible_columns(2);
+    }
+
+    #[test]
+    fn test_use_color_does_not_panic() {
+        // Just ensure it runs without panicking in test context
+        let _ = use_color();
+    }
+
+    #[test]
+    fn test_format_cost_styled_no_color() {
+        // Without color, should return plain string
+        assert_eq!(format_cost_styled(0.0, false), "$0.00");
+        assert_eq!(format_cost_styled(1.50, false), "$1.50");
+    }
+
+    #[test]
+    fn test_format_tokens_styled_no_color() {
+        assert_eq!(format_tokens_styled(0, false), "0");
+        assert_eq!(format_tokens_styled(1234, false), "1,234");
     }
 }

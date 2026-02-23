@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, Row};
+use chrono::{DateTime, NaiveDate, Utc};
+use rusqlite::{params, Connection, Row, types::Value};
 
 use crate::paths;
 use crate::types::UsageEntry;
@@ -21,7 +21,13 @@ impl Cache {
             fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA cache_size=-10000;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA mmap_size=268435456;",
+        )?;
         let cache = Self { conn };
         cache.init_schema()?;
         Ok(cache)
@@ -98,6 +104,54 @@ impl Cache {
             .prepare("SELECT * FROM usage_entries ORDER BY timestamp")?;
         let entries = stmt
             .query_map([], Self::row_to_entry)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(entries)
+    }
+
+    /// Load cached entries with SQL-level filtering by date range and provider.
+    pub fn load_entries_filtered(
+        &self,
+        since: Option<NaiveDate>,
+        until: Option<NaiveDate>,
+        providers: &[String],
+    ) -> anyhow::Result<Vec<UsageEntry>> {
+        let mut conditions: Vec<String> = Vec::new();
+        let mut param_values: Vec<Value> = Vec::new();
+
+        if let Some(s) = since {
+            conditions.push("timestamp >= ?".to_string());
+            param_values.push(Value::Text(s.to_string()));
+        }
+
+        if let Some(u) = until {
+            if let Some(next) = u.succ_opt() {
+                conditions.push("timestamp < ?".to_string());
+                param_values.push(Value::Text(next.to_string()));
+            }
+        }
+
+        if !providers.is_empty() {
+            let placeholders: Vec<&str> = providers.iter().map(|_| "?").collect();
+            conditions.push(format!("provider IN ({})", placeholders.join(",")));
+            for p in providers {
+                param_values.push(Value::Text(p.clone()));
+            }
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            "SELECT * FROM usage_entries{} ORDER BY timestamp",
+            where_clause
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let entries = stmt
+            .query_map(rusqlite::params_from_iter(param_values), Self::row_to_entry)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(entries)

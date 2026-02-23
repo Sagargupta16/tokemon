@@ -58,6 +58,10 @@ pub struct Cli {
     /// Force re-discovery of files (ignore cache freshness)
     #[arg(long, global = true)]
     pub refresh: bool,
+
+    /// Force re-parse of all files (ignore cached data)
+    #[arg(long, global = true)]
+    pub reparse: bool,
 }
 
 impl Cli {

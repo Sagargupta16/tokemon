@@ -35,6 +35,12 @@ pub struct Config {
     /// Sort order: "asc" (oldest first) or "desc" (newest first)
     pub sort_order: String,
 
+    /// Always re-discover files (ignore cache freshness)
+    pub refresh: bool,
+
+    /// Always re-parse all files from disk (ignore cached data)
+    pub reparse: bool,
+
     /// Budget limits for pacemaker
     pub budget: BudgetConfig,
 }
@@ -87,6 +93,8 @@ impl Default for Config {
             providers: Vec::new(),
             columns: ColumnConfig::default(),
             sort_order: "asc".to_string(),
+            refresh: false,
+            reparse: false,
             budget: BudgetConfig::default(),
         }
     }

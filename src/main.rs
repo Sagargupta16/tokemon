@@ -1,4 +1,4 @@
-use chrono::{Datelike, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use clap::Parser;
 
 mod aggregator;
@@ -84,7 +84,10 @@ fn load_and_price(
 ) -> anyhow::Result<Vec<types::UsageEntry>> {
     let registry = ProviderRegistry::new();
     let filter = resolve_providers(cli, config);
-    let mut entries = parse_with_cache(&registry, filter, cli.refresh)?;
+    let force_refresh = cli.refresh || config.refresh;
+    let force_reparse = cli.reparse || config.reparse;
+    let mut entries =
+        parse_with_cache(&registry, filter, force_refresh, force_reparse, cli.since, cli.until)?;
 
     if !(cli.no_cost || config.no_cost) {
         let offline = force_offline || cli.offline || config.offline;
@@ -263,6 +266,9 @@ fn parse_with_cache(
     registry: &ProviderRegistry,
     filter: &[String],
     force_refresh: bool,
+    force_reparse: bool,
+    since: Option<NaiveDate>,
+    until: Option<NaiveDate>,
 ) -> anyhow::Result<Vec<types::UsageEntry>> {
     let cache = Cache::open()
         .map_err(|e| {
@@ -277,15 +283,26 @@ fn parse_with_cache(
         return parse_all_directly(&providers);
     };
 
-    // If cache is fresh and no --refresh flag, skip discovery entirely
-    if !force_refresh && !cache.should_rediscover(30) {
-        let mut entries = cache.load_all_entries()?;
+    let has_filters = since.is_some() || until.is_some() || !filter.is_empty();
+
+    // If cache is fresh and no --refresh/--reparse flag, skip discovery entirely
+    if !force_refresh && !force_reparse && !cache.should_rediscover(30) {
+        let mut entries = if has_filters {
+            cache.load_entries_filtered(since, until, filter)?
+        } else {
+            cache.load_all_entries()?
+        };
         entries = dedup::deduplicate(entries);
         entries.sort_by_key(|e| e.timestamp);
         return Ok(entries);
     }
 
-    let cached_mtimes = cache.cached_file_mtimes();
+    // When --reparse, ignore cached mtimes so every file gets re-parsed
+    let cached_mtimes = if force_reparse {
+        std::collections::HashMap::new()
+    } else {
+        cache.cached_file_mtimes()
+    };
 
     // Find files that need (re)parsing
     let files_to_parse: Vec<_> = providers
@@ -329,7 +346,11 @@ fn parse_with_cache(
 
     cache.set_last_discovery();
 
-    let mut entries = cache.load_all_entries()?;
+    let mut entries = if has_filters {
+        cache.load_entries_filtered(since, until, filter)?
+    } else {
+        cache.load_all_entries()?
+    };
     entries = dedup::deduplicate(entries);
     entries.sort_by_key(|e| e.timestamp);
     Ok(entries)
