@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Unified LLM token usage tracking across all providers"
 license = "MIT"
+repository = "https://github.com/mm65x/tokemon"
+homepage = "https://github.com/mm65x/tokemon"
+readme = "README.md"
+keywords = ["llm", "tokens", "usage", "cli", "monitoring"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 # Error handling
