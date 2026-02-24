@@ -1,7 +1,14 @@
 use std::path::PathBuf;
 
 /// VSCode-compatible editor forks that store extensions in globalStorage
-const VSCODE_FORKS: &[&str] = &["Code", "Cursor", "Windsurf", "VSCodium", "Positron"];
+const VSCODE_FORKS: &[&str] = &[
+    "Code",
+    "Code - Insiders",
+    "Cursor",
+    "Windsurf",
+    "VSCodium",
+    "Positron",
+];
 
 pub fn home_dir() -> PathBuf {
     directories::BaseDirs::new()

@@ -1,17 +1,110 @@
-use std::path::PathBuf;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
+use crate::error::{Result, TokemonError};
 use crate::paths;
+use crate::timestamp;
+use crate::types::Record;
 
-use super::jsonl_source::{JsonlSource, JsonlSourceConfig};
+pub struct PiAgentSource {
+    base_dir: PathBuf,
+}
 
-pub struct PiAgentConfig;
-
-impl JsonlSourceConfig for PiAgentConfig {
-    const NAME: &'static str = "pi-agent";
-    const DISPLAY_NAME: &'static str = "Pi Agent";
-    fn base_dir() -> PathBuf {
-        paths::home_dir().join(".pi-agent/sessions")
+impl PiAgentSource {
+    pub fn new() -> Self {
+        Self {
+            base_dir: paths::home_dir().join(".pi/agent/sessions"),
+        }
     }
 }
 
-pub type PiAgentSource = JsonlSource<PiAgentConfig>;
+#[derive(Deserialize)]
+struct PiLine {
+    #[serde(rename = "type")]
+    line_type: Option<String>,
+    timestamp: Option<String>,
+    message: Option<PiMessage>,
+}
+
+#[derive(Deserialize)]
+struct PiMessage {
+    role: Option<String>,
+    model: Option<String>,
+    usage: Option<PiUsage>,
+}
+
+#[derive(Deserialize)]
+struct PiUsage {
+    input: Option<u64>,
+    output: Option<u64>,
+    #[serde(rename = "cacheRead")]
+    cache_read: Option<u64>,
+    #[serde(rename = "cacheWrite")]
+    cache_write: Option<u64>,
+}
+
+impl super::Source for PiAgentSource {
+    fn name(&self) -> &str {
+        "pi-agent"
+    }
+
+    fn display_name(&self) -> &str {
+        "Pi Agent"
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.base_dir.clone()
+    }
+
+    fn discover_files(&self) -> Vec<PathBuf> {
+        let pattern = self.base_dir.join("**/*.jsonl").display().to_string();
+        glob::glob(&pattern)
+            .map(|paths| paths.filter_map(|p| p.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
+        let file = fs::File::open(path).map_err(TokemonError::Io)?;
+        let reader = BufReader::new(file);
+        let session_id = timestamp::extract_session_id(path);
+
+        let entries = reader
+            .lines()
+            .filter_map(|line| line.ok())
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str::<PiLine>(&line).ok())
+            .filter(|parsed| parsed.line_type.as_deref() == Some("message"))
+            .filter_map(|parsed| {
+                let message = parsed.message?;
+                if message.role.as_deref() != Some("assistant") {
+                    return None;
+                }
+                let usage = message.usage?;
+                let ts = parsed
+                    .timestamp
+                    .as_deref()
+                    .and_then(timestamp::parse_timestamp)?;
+
+                Some(Record {
+                    timestamp: ts,
+                    provider: "pi-agent".to_string(),
+                    model: message.model,
+                    input_tokens: usage.input.unwrap_or(0),
+                    output_tokens: usage.output.unwrap_or(0),
+                    cache_read_tokens: usage.cache_read.unwrap_or(0),
+                    cache_creation_tokens: usage.cache_write.unwrap_or(0),
+                    thinking_tokens: 0,
+                    cost_usd: None,
+                    message_id: None,
+                    request_id: None,
+                    session_id: session_id.clone(),
+                })
+            })
+            .collect();
+
+        Ok(entries)
+    }
+}

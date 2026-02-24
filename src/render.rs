@@ -106,12 +106,16 @@ fn visible_columns(extra_fixed_cols: usize) -> (bool, bool, bool, bool) {
         .map(|(w, _)| w.0 as usize)
         .unwrap_or(120);
 
-    let fixed_overhead = extra_fixed_cols * 15 + 2 * 14 + 10;
-    let remaining = width.saturating_sub(fixed_overhead);
+    // Each numeric column needs ~18 chars (content + padding + borders).
+    // Fixed columns: Date (~14), Total Tokens (~18), Cost (~12), borders (~4).
+    // In breakdown mode extra_fixed_cols=2 adds Model (~22).
+    let col_width: usize = 18;
+    let fixed = extra_fixed_cols * 22 + 14 + 18 + 12 + 4;
+    let remaining = width.saturating_sub(fixed);
 
-    let show_cache_write = remaining >= 4 * 14;
-    let show_cache_read = remaining >= 3 * 14;
-    let show_input = remaining >= 2 * 14;
+    let show_cache_write = remaining >= 4 * col_width;
+    let show_cache_read = remaining >= 3 * col_width;
+    let show_input = remaining >= 2 * col_width;
     let show_output = show_input;
 
     (show_input, show_output, show_cache_write, show_cache_read)
