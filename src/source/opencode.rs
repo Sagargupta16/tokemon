@@ -1,43 +1,20 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use crate::error::{Result, TokemonError};
+use crate::error::Result;
 use crate::paths;
 use crate::timestamp;
 use crate::types::Record;
 
 pub struct OpenCodeSource {
-    dirs: Vec<PathBuf>,
+    db_path: PathBuf,
 }
 
 impl OpenCodeSource {
     pub fn new() -> Self {
-        let home = paths::home_dir();
         Self {
-            dirs: vec![
-                home.join(".local/share/opencode/storage/message"),
-                home.join(".opencode/message"),
-            ],
+            db_path: paths::home_dir().join(".opencode/opencode.db"),
         }
     }
-}
-
-#[derive(Deserialize)]
-struct OpenCodeMessage {
-    model: Option<String>,
-    role: Option<String>,
-    timestamp: Option<String>,
-    usage: Option<OpenCodeUsage>,
-}
-
-#[derive(Deserialize)]
-struct OpenCodeUsage {
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_read_tokens: Option<u64>,
-    cache_creation_tokens: Option<u64>,
 }
 
 impl super::Source for OpenCodeSource {
@@ -50,67 +27,91 @@ impl super::Source for OpenCodeSource {
     }
 
     fn data_dir(&self) -> PathBuf {
-        self.dirs.first().cloned().unwrap_or_default()
+        self.db_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default()
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        for dir in &self.dirs {
-            let pattern = dir.join("**/msg_*.json").display().to_string();
-            if let Ok(paths) = glob::glob(&pattern) {
-                files.extend(paths.filter_map(|p| p.ok()));
-            }
+        if self.db_path.exists() {
+            vec![self.db_path.clone()]
+        } else {
+            Vec::new()
         }
-        files
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
-        let content = fs::read_to_string(path).map_err(TokemonError::Io)?;
-        let msg: OpenCodeMessage =
-            serde_json::from_str(&content).map_err(|e| TokemonError::JsonParse {
-                file: path.display().to_string(),
-                source: e,
-            })?;
-
-        // Only process assistant/model messages
-        let role = msg.role.as_deref().unwrap_or("");
-        if role != "assistant" && role != "model" {
-            return Ok(Vec::new());
-        }
-
-        let usage = match msg.usage {
-            Some(u) => u,
-            None => return Ok(Vec::new()),
+        let conn = match rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[tokemon] Warning: failed to open OpenCode DB: {}", e);
+                return Ok(Vec::new());
+            }
         };
 
-        let timestamp = match msg
-            .timestamp
-            .as_deref()
-            .and_then(timestamp::parse_timestamp)
-        {
-            Some(dt) => dt,
-            None => return Ok(Vec::new()),
+        // Join sessions (which have token counts) with assistant messages (which have model names).
+        // One record per session, using the model from the first assistant message.
+        let mut stmt = match conn.prepare(
+            "SELECT s.id, s.prompt_tokens, s.completion_tokens, s.cost, s.created_at,
+                    (SELECT m.model FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'assistant' AND m.model IS NOT NULL
+                     LIMIT 1) as model
+             FROM sessions s
+             WHERE s.prompt_tokens > 0 OR s.completion_tokens > 0
+             ORDER BY s.created_at",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[tokemon] Warning: failed to query OpenCode DB: {}", e);
+                return Ok(Vec::new());
+            }
         };
 
-        let session_id = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-            .map(String::from);
+        let entries = stmt
+            .query_map([], |row| {
+                let session_id: String = row.get(0)?;
+                let input_tokens: i64 = row.get(1)?;
+                let output_tokens: i64 = row.get(2)?;
+                let cost: f64 = row.get(3)?;
+                let created_at: i64 = row.get(4)?;
+                let model: Option<String> = row.get(5)?;
+                Ok((
+                    session_id,
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    created_at,
+                    model,
+                ))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                let (session_id, input_tokens, output_tokens, cost, created_at, model) =
+                    row.ok()?;
+                let ts = timestamp::parse_timestamp_numeric(created_at)?;
+                Some(Record {
+                    timestamp: ts,
+                    provider: "opencode".to_string(),
+                    model,
+                    input_tokens: input_tokens as u64,
+                    output_tokens: output_tokens as u64,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    thinking_tokens: 0,
+                    cost_usd: if cost > 0.0 { Some(cost) } else { None },
+                    message_id: None,
+                    request_id: None,
+                    session_id: Some(session_id),
+                })
+            })
+            .collect();
 
-        Ok(vec![Record {
-            timestamp,
-            provider: "opencode".to_string(),
-            model: msg.model,
-            input_tokens: usage.input_tokens.unwrap_or(0),
-            output_tokens: usage.output_tokens.unwrap_or(0),
-            cache_read_tokens: usage.cache_read_tokens.unwrap_or(0),
-            cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-            thinking_tokens: 0,
-            cost_usd: None,
-            message_id: None,
-            request_id: None,
-            session_id,
-        }])
+        Ok(entries)
     }
 }

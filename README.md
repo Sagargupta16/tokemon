@@ -147,7 +147,7 @@ CLI flags always override config values.
 | Codex CLI | `~/.codex/sessions/**/*.jsonl` | JSONL |
 | Gemini CLI | `~/.gemini/tmp/**/session*.json` | JSON |
 | Amp | `~/.local/share/amp/threads/**/*.jsonl` | JSONL |
-| OpenCode | `~/.local/share/opencode/storage/message/**/*.json` | JSON |
+| OpenCode | `~/.opencode/opencode.db` | SQLite |
 | Cline | VSCode globalStorage | JSON |
 | Roo Code | VSCode globalStorage | JSON |
 | Kilo Code | VSCode globalStorage | JSON |
