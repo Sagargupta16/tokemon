@@ -81,14 +81,14 @@ fn build_summaries(grouped: BTreeMap<NaiveDate, (String, Vec<&Record>)>) -> Vec<
     let mut summaries = Vec::new();
 
     for (date, (label, entries)) in grouped {
-        let mut model_map: BTreeMap<String, ModelUsage> = BTreeMap::new();
+        let mut model_map: BTreeMap<(&str, &str), ModelUsage> = BTreeMap::new();
 
         for entry in &entries {
-            let model_name = entry.model.as_deref().unwrap_or("unknown").to_string();
-            let key = format!("{}:{}", entry.provider, model_name);
+            let model_name = entry.model.as_deref().unwrap_or("unknown");
+            let key = (entry.provider.as_str(), model_name);
 
             let mu = model_map.entry(key).or_insert_with(|| ModelUsage {
-                model: model_name.clone(),
+                model: model_name.to_string(),
                 provider: entry.provider.clone(),
                 ..Default::default()
             });

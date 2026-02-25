@@ -87,8 +87,8 @@ impl super::Source for CodexSource {
                 Err(_) => continue,
             };
 
-            // Pre-filter: only parse lines that could be turn_context or event_msg
-            if !line.contains("\"turn_context\"") && !line.contains("\"event_msg\"") {
+            // Pre-filter: skip lines that are neither turn_context nor event_msg
+            if !(line.contains("\"turn_context\"") || line.contains("\"event_msg\"")) {
                 continue;
             }
 

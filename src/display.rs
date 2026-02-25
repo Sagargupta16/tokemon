@@ -37,11 +37,14 @@ pub fn display_client(raw: &str) -> String {
 /// "openai/gpt-4o" -> "gpt-4o"
 #[must_use]
 pub fn display_model(raw: &str) -> String {
-    // Strip provider prefixes
-    let s = raw
+    // Strip slash-based prefixes first (e.g., "bedrock/", "openai/")
+    let after_slash = raw.split('/').next_back().unwrap_or(raw);
+
+    // Then strip dot-based prefixes (e.g., "vertexai.", "anthropic.")
+    let s = after_slash
         .strip_prefix("vertexai.")
-        .or_else(|| raw.split('/').next_back())
-        .unwrap_or(raw);
+        .or_else(|| after_slash.strip_prefix("anthropic."))
+        .unwrap_or(after_slash);
 
     if let Some(rest) = s.strip_prefix("claude-") {
         return strip_date_suffix(rest).to_string();
@@ -181,6 +184,15 @@ mod tests {
         assert_eq!(
             display_model("anthropic/claude-sonnet-4-20250514"),
             "sonnet-4"
+        );
+        // Double prefix: bedrock/anthropic.claude-*
+        assert_eq!(
+            display_model("bedrock/anthropic.claude-3-5-sonnet-20241022"),
+            "3-5-sonnet"
+        );
+        assert_eq!(
+            display_model("bedrock/anthropic.claude-opus-4-1-20250805"),
+            "opus-4-1"
         );
     }
 

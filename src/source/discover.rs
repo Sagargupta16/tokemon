@@ -39,12 +39,17 @@ fn walk_collect(
     };
 
     for entry in entries.filter_map(|e| e.ok()) {
+        // Use entry.file_type() which does NOT follow symlinks,
+        // avoiding infinite loops from circular symlinks.
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_file() {
+        if ft.is_file() {
             if predicate(&path) {
                 out.push(path);
             }
-        } else if path.is_dir() && depth > 1 {
+        } else if ft.is_dir() && depth > 1 {
             walk_collect(&path, depth - 1, predicate, out);
         }
     }

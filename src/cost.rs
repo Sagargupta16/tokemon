@@ -38,7 +38,10 @@ impl PricingEngine {
 
         if offline {
             if let Some(data) = Self::read_stale_cache(&cache_path) {
-                return Self::parse_pricing(&data);
+                if let Ok(engine) = Self::parse_pricing(&data) {
+                    return Ok(engine);
+                }
+                eprintln!("[tokemon] Warning: cached pricing data corrupt; costs will be $0.00");
             }
             eprintln!("[tokemon] Warning: no cached pricing data and --offline specified; costs will be $0.00");
             return Ok(Self {
@@ -59,11 +62,13 @@ impl PricingEngine {
             Err(e) => {
                 // Fall back to stale cache if available
                 if let Some(data) = Self::read_stale_cache(&cache_path) {
-                    eprintln!(
-                        "[tokemon] Warning: failed to fetch pricing: {}; using cached prices",
-                        e
-                    );
-                    return Self::parse_pricing(&data);
+                    if let Ok(engine) = Self::parse_pricing(&data) {
+                        eprintln!(
+                            "[tokemon] Warning: failed to fetch pricing: {}; using cached prices",
+                            e
+                        );
+                        return Ok(engine);
+                    }
                 }
                 eprintln!(
                     "[tokemon] Warning: failed to fetch pricing: {}; costs will be $0.00",
@@ -194,7 +199,8 @@ impl PricingEngine {
 
     fn fetch_remote() -> Result<String> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| TokemonError::PricingFetch(e.to_string()))?;
         let resp = client

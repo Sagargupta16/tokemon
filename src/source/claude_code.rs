@@ -80,10 +80,10 @@ impl super::Source for ClaudeCodeSource {
                     files.push(path);
                 } else if path.is_dir() {
                     // Check for subagents/ directory inside session UUID dirs
-                    files.extend(super::discover::collect_by_ext(
-                        &path.join("subagents"),
-                        "jsonl",
-                    ));
+                    let subagents = path.join("subagents");
+                    if subagents.is_dir() {
+                        files.extend(super::discover::collect_by_ext(&subagents, "jsonl"));
+                    }
                 }
             }
         }

@@ -58,7 +58,6 @@ impl Cache {
                 dedup_key TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_entries(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_provider ON usage_entries(provider);
             CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime);
             CREATE INDEX IF NOT EXISTS idx_provider_timestamp ON usage_entries(provider, timestamp);
             CREATE TABLE IF NOT EXISTS cache_meta (
@@ -180,7 +179,7 @@ impl Cache {
             params![path_str],
         )?;
 
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO usage_entries (
                 provider, source_file, source_mtime, timestamp, model,
                 input_tokens, output_tokens, cache_read_tokens,
