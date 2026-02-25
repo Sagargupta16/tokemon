@@ -45,9 +45,7 @@ impl super::Source for PiebaldSource {
     }
 
     fn parse_file(&self, _path: &Path) -> Result<Vec<Record>> {
-        // SQLite parsing deferred to keep PoC dependencies minimal.
-        // Would need rusqlite dependency.
-        eprintln!("[tokemon] Note: Piebald SQLite parsing not yet implemented (needs rusqlite)");
+        // Piebald DB schema not yet reverse-engineered.
         Ok(Vec::new())
     }
 }

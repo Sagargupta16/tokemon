@@ -46,7 +46,11 @@ impl super::Source for OpenCodeSource {
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
-            Ok(c) => c,
+            Ok(c) => {
+                // Wait up to 5s if the DB is locked by a running OpenCode process
+                let _ = c.busy_timeout(std::time::Duration::from_secs(5));
+                c
+            }
             Err(e) => {
                 eprintln!("[tokemon] Warning: failed to open OpenCode DB: {}", e);
                 return Ok(Vec::new());
