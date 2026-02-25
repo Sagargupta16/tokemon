@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod cost;
 mod dedup;
+mod display;
 mod error;
 mod pacemaker;
 mod paths;
@@ -172,7 +173,7 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
         render::print_json(&report);
     } else {
         let breakdown = cli.display_mode(config) == cli::DisplayMode::Breakdown;
-        render::print_table(&report, breakdown);
+        render::print_table(&report, breakdown, &config.columns);
     }
 
     Ok(())
@@ -335,16 +336,26 @@ fn parse_with_cache(
         })
         .collect();
 
-    // Parse changed files and update cache
+    // Parse changed files in parallel, then insert into cache serially
     if !files_to_parse.is_empty() {
+        use rayon::prelude::*;
+
+        let results: Vec<_> = files_to_parse
+            .par_iter()
+            .map(|(provider, file, mtime)| {
+                let parsed = provider.parse_file(file);
+                (file, *mtime, parsed)
+            })
+            .collect();
+
         if let Err(e) = cache.begin() {
             eprintln!("[tokemon] Warning: cache transaction failed: {}", e);
         }
 
-        for (provider, file, mtime) in &files_to_parse {
-            match provider.parse_file(file) {
+        for (file, mtime, parsed) in &results {
+            match parsed {
                 Ok(entries) => {
-                    if let Err(e) = cache.store_file_entries(file, *mtime, &entries) {
+                    if let Err(e) = cache.store_file_entries(file, *mtime, entries) {
                         eprintln!("[tokemon] Warning: cache write failed: {}", e);
                     }
                 }

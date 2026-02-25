@@ -60,6 +60,7 @@ impl Cache {
             CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_entries(timestamp);
             CREATE INDEX IF NOT EXISTS idx_provider ON usage_entries(provider);
             CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime);
+            CREATE INDEX IF NOT EXISTS idx_provider_timestamp ON usage_entries(provider, timestamp);
             CREATE TABLE IF NOT EXISTS cache_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -98,11 +99,17 @@ impl Cache {
         map
     }
 
+    const ENTRY_COLUMNS: &str = "provider, timestamp, model, input_tokens, output_tokens, \
+        cache_read_tokens, cache_creation_tokens, thinking_tokens, \
+        cost_usd, message_id, request_id, session_id";
+
     /// Load ALL cached entries in one query.
     pub fn load_all_entries(&self) -> anyhow::Result<Vec<Record>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM usage_entries ORDER BY timestamp")?;
+        let sql = format!(
+            "SELECT {} FROM usage_entries ORDER BY timestamp",
+            Self::ENTRY_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let entries = stmt
             .query_map([], Self::row_to_entry)?
             .filter_map(|r| r.ok())
@@ -146,7 +153,8 @@ impl Cache {
             format!(" WHERE {}", conditions.join(" AND "))
         };
         let sql = format!(
-            "SELECT * FROM usage_entries{} ORDER BY timestamp",
+            "SELECT {} FROM usage_entries{} ORDER BY timestamp",
+            Self::ENTRY_COLUMNS,
             where_clause
         );
 
@@ -244,25 +252,26 @@ impl Cache {
     }
 
     /// Single source of truth for mapping a SQLite row to a Record.
+    /// Column order must match ENTRY_COLUMNS.
     fn row_to_entry(row: &Row) -> rusqlite::Result<Record> {
-        let ts_str: String = row.get("timestamp")?;
+        let ts_str: String = row.get(1)?;
         let timestamp = DateTime::parse_from_rfc3339(&ts_str)
             .map(|dt| dt.to_utc())
             .unwrap_or_else(|_| Utc::now());
 
         Ok(Record {
             timestamp,
-            provider: row.get("provider")?,
-            model: row.get("model")?,
-            input_tokens: row.get::<_, i64>("input_tokens")? as u64,
-            output_tokens: row.get::<_, i64>("output_tokens")? as u64,
-            cache_read_tokens: row.get::<_, i64>("cache_read_tokens")? as u64,
-            cache_creation_tokens: row.get::<_, i64>("cache_creation_tokens")? as u64,
-            thinking_tokens: row.get::<_, i64>("thinking_tokens")? as u64,
-            cost_usd: row.get("cost_usd")?,
-            message_id: row.get("message_id")?,
-            request_id: row.get("request_id")?,
-            session_id: row.get("session_id")?,
+            provider: row.get(0)?,
+            model: row.get(2)?,
+            input_tokens: row.get::<_, i64>(3)? as u64,
+            output_tokens: row.get::<_, i64>(4)? as u64,
+            cache_read_tokens: row.get::<_, i64>(5)? as u64,
+            cache_creation_tokens: row.get::<_, i64>(6)? as u64,
+            thinking_tokens: row.get::<_, i64>(7)? as u64,
+            cost_usd: row.get(8)?,
+            message_id: row.get(9)?,
+            request_id: row.get(10)?,
+            session_id: row.get(11)?,
         })
     }
 }

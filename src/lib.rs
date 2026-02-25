@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod cost;
 pub mod dedup;
+pub mod display;
 pub mod error;
 pub mod pacemaker;
 pub mod paths;

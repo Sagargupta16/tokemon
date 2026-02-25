@@ -36,17 +36,23 @@ struct ApiReqData {
 
 impl ClineFormat {
     pub fn discover_files(&self) -> Vec<PathBuf> {
+        // Structure: {globalStorage}/{extension_id}/tasks/{task_id}/ui_messages.json
         let storage_dirs = paths::vscode_global_storage_dirs();
         let mut files = Vec::new();
 
         for storage_dir in storage_dirs {
-            let pattern = storage_dir
-                .join(self.extension_id)
-                .join("tasks/*/ui_messages.json")
-                .display()
-                .to_string();
-            if let Ok(paths) = glob::glob(&pattern) {
-                files.extend(paths.filter_map(|p| p.ok()));
+            let tasks_dir = storage_dir.join(self.extension_id).join("tasks");
+            let Ok(tasks) = std::fs::read_dir(&tasks_dir) else {
+                continue;
+            };
+            for task in tasks.filter_map(|e| e.ok()) {
+                if !task.path().is_dir() {
+                    continue;
+                }
+                let ui_file = task.path().join("ui_messages.json");
+                if ui_file.is_file() {
+                    files.push(ui_file);
+                }
             }
         }
         files

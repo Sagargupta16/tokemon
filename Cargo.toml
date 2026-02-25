@@ -30,7 +30,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # File system
 directories = "5"
-glob = "0.3"
 
 # Table output
 tabled = { version = "0.17", features = ["ansi"] }

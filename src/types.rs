@@ -28,11 +28,34 @@ impl Record {
             + self.thinking_tokens
     }
 
-    /// Generate dedup hash from message_id and request_id.
+    /// Generate a dedup hash from message_id and request_id.
     /// Returns None if neither field is present (entry kept unconditionally).
+    /// Uses a hash instead of string keys to avoid allocations.
+    #[must_use]
+    pub fn dedup_hash(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match (&self.message_id, &self.request_id) {
+            (Some(msg), Some(req)) => {
+                msg.hash(&mut hasher);
+                req.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            (Some(msg), None) => {
+                msg.hash(&mut hasher);
+                self.model.as_deref().unwrap_or("unknown").hash(&mut hasher);
+                self.input_tokens.hash(&mut hasher);
+                self.output_tokens.hash(&mut hasher);
+                Some(hasher.finish())
+            }
+            _ => None,
+        }
+    }
+
+    /// Generate a string dedup key for cache storage.
+    /// Only used during cache insertion, not for in-memory dedup.
     #[must_use]
     pub fn dedup_key(&self) -> Option<String> {
-        // Use \0 separator to prevent collisions when IDs contain ':'
         match (&self.message_id, &self.request_id) {
             (Some(msg), Some(req)) => Some(format!("{}\0{}", msg, req)),
             (Some(msg), None) => {

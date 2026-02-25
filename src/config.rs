@@ -72,8 +72,9 @@ impl Default for BudgetConfig {
 #[serde(default)]
 pub struct ColumnConfig {
     pub date: bool,
-    pub provider: bool,
     pub model: bool,
+    pub api_provider: bool,
+    pub client: bool,
     pub input: bool,
     pub output: bool,
     pub cache_write: bool,
@@ -104,8 +105,9 @@ impl Default for ColumnConfig {
     fn default() -> Self {
         Self {
             date: true,
-            provider: true,
             model: true,
+            api_provider: true,
+            client: true,
             input: true,
             output: true,
             cache_write: true,

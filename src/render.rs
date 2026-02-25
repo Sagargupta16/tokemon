@@ -5,6 +5,7 @@ use tabled::settings::object::Columns;
 use tabled::settings::{Alignment, Modify, Style};
 use tabled::{Table, Tabled};
 
+use crate::display;
 use crate::types::Report;
 
 // ---------------------------------------------------------------------------
@@ -140,51 +141,128 @@ struct DiscoverRow {
     files: String,
 }
 
-pub fn print_table(report: &Report, breakdown: bool) {
+pub fn print_table(report: &Report, breakdown: bool, col_cfg: &crate::config::ColumnConfig) {
     if report.summaries.is_empty() {
         println!("No usage data found.");
         return;
     }
 
     if breakdown {
-        print_breakdown_table(report);
+        print_breakdown_table(report, col_cfg);
     } else {
-        print_compact_table(report);
+        print_compact_table(report, col_cfg);
     }
 }
 
-fn print_breakdown_table(report: &Report) {
+#[derive(Clone, Copy)]
+struct BreakdownCols {
+    show_in: bool,
+    show_out: bool,
+    show_cw: bool,
+    show_cr: bool,
+    show_client: bool,
+    show_api: bool,
+}
+
+impl BreakdownCols {
+    /// Mask responsive column choices against user config toggles.
+    /// A column is only shown if both the responsive set AND config allow it.
+    fn mask(self, cfg: &crate::config::ColumnConfig) -> Self {
+        Self {
+            show_in: self.show_in && cfg.input,
+            show_out: self.show_out && cfg.output,
+            show_cw: self.show_cw && cfg.cache_write,
+            show_cr: self.show_cr && cfg.cache_read,
+            show_client: self.show_client && cfg.client,
+            show_api: self.show_api && cfg.api_provider,
+        }
+    }
+}
+
+fn print_breakdown_table(report: &Report, col_cfg: &crate::config::ColumnConfig) {
     let color = use_color();
     let width = terminal_width();
 
     // Try column sets from most to fewest until the table fits.
-    // Order: all 4 → no cache_write → no caches → no optional cols.
+    // Hide priority: client, api_provider, cache_write, cache_read, in+out
     let column_sets = [
-        (true, true, true, true),
-        (true, true, false, true),
-        (true, true, false, false),
-        (false, false, false, false),
+        BreakdownCols {
+            show_in: true,
+            show_out: true,
+            show_cw: true,
+            show_cr: true,
+            show_client: true,
+            show_api: true,
+        },
+        BreakdownCols {
+            show_in: true,
+            show_out: true,
+            show_cw: true,
+            show_cr: true,
+            show_client: false,
+            show_api: true,
+        },
+        BreakdownCols {
+            show_in: true,
+            show_out: true,
+            show_cw: true,
+            show_cr: true,
+            show_client: false,
+            show_api: false,
+        },
+        BreakdownCols {
+            show_in: true,
+            show_out: true,
+            show_cw: false,
+            show_cr: true,
+            show_client: false,
+            show_api: false,
+        },
+        BreakdownCols {
+            show_in: true,
+            show_out: true,
+            show_cw: false,
+            show_cr: false,
+            show_client: false,
+            show_api: false,
+        },
+        BreakdownCols {
+            show_in: false,
+            show_out: false,
+            show_cw: false,
+            show_cr: false,
+            show_client: false,
+            show_api: false,
+        },
     ];
 
-    for &(show_in, show_out, show_cw, show_cr) in &column_sets {
-        let table = render_breakdown(report, color, show_in, show_out, show_cw, show_cr);
+    for cols in &column_sets {
+        let masked = cols.mask(col_cfg);
+        let table = render_breakdown(report, color, &masked);
         let first_line = table.lines().next().unwrap_or("");
-        if display_width(first_line) <= width || (!show_in && !show_out) {
+        if display_width(first_line) <= width || (!masked.show_in && !masked.show_out) {
             println!("{}", table);
             return;
         }
     }
 }
 
-fn render_breakdown(
-    report: &Report,
-    color: bool,
-    show_in: bool,
-    show_out: bool,
-    show_cw: bool,
-    show_cr: bool,
-) -> String {
+fn render_breakdown(report: &Report, color: bool, cols: &BreakdownCols) -> String {
+    let BreakdownCols {
+        show_in,
+        show_out,
+        show_cw,
+        show_cr,
+        show_client,
+        show_api,
+    } = *cols;
     let mut header: Vec<String> = vec!["Date".into(), "Model".into()];
+    if show_api {
+        header.push("API Provider".into());
+    }
+    if show_client {
+        header.push("Client".into());
+    }
     if show_in {
         header.push("Input".into());
     }
@@ -201,7 +279,7 @@ fn render_breakdown(
     header.push("Cost".into());
     style_header(&mut header, color);
 
-    let first_numeric_col = 2;
+    let first_numeric_col = 2 + usize::from(show_api) + usize::from(show_client);
 
     let mut builder = Builder::default();
     builder.push_record(header);
@@ -214,6 +292,12 @@ fn render_breakdown(
             + summary.total_thinking;
 
         let mut row: Vec<String> = vec![summary.label.clone(), String::new()];
+        if show_api {
+            row.push(String::new());
+        }
+        if show_client {
+            row.push(String::new());
+        }
         if show_in {
             row.push(format_tokens_styled(summary.total_input, color));
         }
@@ -231,16 +315,20 @@ fn render_breakdown(
         bold_row(&mut row, color);
         builder.push_record(row);
 
-        // Detect duplicate shortened model names to disambiguate with provider
+        // Build disambiguation suffixes for model names when columns are hidden
         let shortened: Vec<String> = summary
             .models
             .iter()
-            .map(|m| shorten_model(&m.model))
+            .map(|m| display::display_model(&m.model))
             .collect();
-        let has_dup: Vec<bool> = shortened
-            .iter()
-            .map(|s| shortened.iter().filter(|o| *o == s).count() > 1)
-            .collect();
+
+        // Detect duplicates that need disambiguation
+        let needs_suffix: Vec<Option<String>> = if show_api && show_client {
+            // Both columns visible — no suffix needed
+            vec![None; shortened.len()]
+        } else {
+            build_disambiguation_suffixes(&summary.models, &shortened, show_api, show_client)
+        };
 
         for (i, model) in summary.models.iter().enumerate() {
             let model_total = model.input_tokens
@@ -249,12 +337,17 @@ fn render_breakdown(
                 + model.cache_creation_tokens
                 + model.thinking_tokens;
 
-            let label = if has_dup[i] {
-                format!("  {} ({})", shortened[i], model.provider)
-            } else {
-                format!("  {}", shortened[i])
+            let label = match &needs_suffix[i] {
+                Some(suffix) => format!("  {} ({})", shortened[i], suffix),
+                None => format!("  {}", shortened[i]),
             };
             let mut row: Vec<String> = vec![String::new(), label];
+            if show_api {
+                row.push(display::infer_api_provider(&model.model));
+            }
+            if show_client {
+                row.push(display::display_client(&model.provider));
+            }
             if show_in {
                 row.push(format_tokens_styled(model.input_tokens, color));
             }
@@ -275,6 +368,12 @@ fn render_breakdown(
 
     let (gi, go, gcw, gcr, gt) = grand_totals(report);
     let mut row: Vec<String> = vec!["TOTAL".into(), String::new()];
+    if show_api {
+        row.push(String::new());
+    }
+    if show_client {
+        row.push(String::new());
+    }
     if show_in {
         row.push(format_tokens(gi));
     }
@@ -299,7 +398,51 @@ fn render_breakdown(
         .to_string()
 }
 
-fn print_compact_table(report: &Report) {
+/// Build disambiguation suffixes for model sub-rows when Client/API Provider
+/// columns are hidden and duplicate shortened model names exist.
+fn build_disambiguation_suffixes(
+    models: &[crate::types::ModelUsage],
+    shortened: &[String],
+    show_api: bool,
+    show_client: bool,
+) -> Vec<Option<String>> {
+    use std::collections::HashMap;
+
+    // Count occurrences of each shortened name
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for s in shortened {
+        *counts.entry(s.as_str()).or_default() += 1;
+    }
+
+    shortened
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if counts[s.as_str()] <= 1 {
+                return None; // No duplicate, no suffix needed
+            }
+
+            let mut parts = Vec::new();
+            if !show_api {
+                let api = display::infer_api_provider(&models[i].model);
+                if !api.is_empty() {
+                    parts.push(api);
+                }
+            }
+            if !show_client {
+                parts.push(display::display_client(&models[i].provider));
+            }
+
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(", "))
+            }
+        })
+        .collect()
+}
+
+fn print_compact_table(report: &Report, col_cfg: &crate::config::ColumnConfig) {
     let color = use_color();
     let width = terminal_width();
 
@@ -311,9 +454,15 @@ fn print_compact_table(report: &Report) {
     ];
 
     for &(show_in, show_out, show_cw, show_cr) in &column_sets {
-        let table = render_compact(report, color, show_in, show_out, show_cw, show_cr);
+        let masked = (
+            show_in && col_cfg.input,
+            show_out && col_cfg.output,
+            show_cw && col_cfg.cache_write,
+            show_cr && col_cfg.cache_read,
+        );
+        let table = render_compact(report, color, masked.0, masked.1, masked.2, masked.3);
         let first_line = table.lines().next().unwrap_or("");
-        if display_width(first_line) <= width || (!show_in && !show_out) {
+        if display_width(first_line) <= width || (!masked.0 && !masked.1) {
             println!("{}", table);
             return;
         }
@@ -550,33 +699,6 @@ fn format_cost(cost: f64) -> String {
     }
 }
 
-fn shorten_model(model: &str) -> String {
-    // Strip provider prefixes like "vertexai.", "openai/", "anthropic/"
-    let s = model
-        .strip_prefix("vertexai.")
-        .or_else(|| model.split('/').last())
-        .unwrap_or(model);
-
-    if let Some(rest) = s.strip_prefix("claude-") {
-        return strip_date_suffix(rest).to_string();
-    }
-
-    strip_date_suffix(s).to_string()
-}
-
-fn strip_date_suffix(s: &str) -> &str {
-    if s.len() >= 9 {
-        let last_9 = &s[s.len() - 9..];
-        if last_9.starts_with('-')
-            && last_9[1..].len() == 8
-            && last_9[1..].chars().all(|c| c.is_ascii_digit())
-        {
-            return &s[..s.len() - 9];
-        }
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,12 +712,30 @@ mod tests {
     }
 
     #[test]
-    fn test_shorten_model() {
-        assert_eq!(shorten_model("claude-opus-4-1-20250805"), "opus-4-1");
-        assert_eq!(shorten_model("claude-sonnet-4-20250514"), "sonnet-4");
-        assert_eq!(shorten_model("claude-opus-4-5-20251101"), "opus-4-5");
-        assert_eq!(shorten_model("gpt-5-codex"), "gpt-5-codex");
-        assert_eq!(shorten_model("gemini-2.5-flash"), "gemini-2.5-flash");
+    fn test_display_model() {
+        use crate::display;
+        assert_eq!(
+            display::display_model("claude-opus-4-1-20250805"),
+            "opus-4-1"
+        );
+        assert_eq!(
+            display::display_model("claude-sonnet-4-20250514"),
+            "sonnet-4"
+        );
+        assert_eq!(
+            display::display_model("claude-opus-4-5-20251101"),
+            "opus-4-5"
+        );
+        assert_eq!(display::display_model("gpt-5-codex"), "gpt-5-codex");
+        assert_eq!(
+            display::display_model("gemini-2.5-flash"),
+            "gemini-2.5-flash"
+        );
+        assert_eq!(
+            display::display_model("vertexai.gemini-2.5-flash"),
+            "gemini-2.5-flash"
+        );
+        assert_eq!(display::display_model("openai/gpt-4o"), "gpt-4o");
     }
 
     #[test]

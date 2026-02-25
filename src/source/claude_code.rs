@@ -60,21 +60,45 @@ impl super::Source for ClaudeCodeSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("**/*.jsonl").display().to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        // Structure: projects/{project}/{uuid}.jsonl        (session transcripts)
+        //            projects/{project}/{uuid}/subagents/agent-{id}.jsonl
+        let mut files = Vec::new();
+        let Ok(projects) = fs::read_dir(&self.base_dir) else {
+            return files;
+        };
+        for project in projects.filter_map(|e| e.ok()) {
+            let project_path = project.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&project_path) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |e| e == "jsonl") {
+                    files.push(path);
+                } else if path.is_dir() {
+                    // Check for subagents/ directory inside session UUID dirs
+                    files.extend(super::discover::collect_by_ext(
+                        &path.join("subagents"),
+                        "jsonl",
+                    ));
+                }
+            }
+        }
+        files
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
         let file = fs::File::open(path).map_err(TokemonError::Io)?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(64 * 1024, file);
         let session_id = timestamp::extract_session_id(path);
 
         let entries = reader
             .lines()
             .filter_map(|line| line.ok())
-            .filter(|line| !line.trim().is_empty())
+            .filter(|line| line.contains("\"assistant\""))
             .filter_map(|line| serde_json::from_str::<ClaudeLine>(&line).ok())
             .filter(|parsed| parsed.line_type.as_deref() == Some("assistant"))
             .filter_map(|parsed| {

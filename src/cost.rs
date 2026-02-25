@@ -37,6 +37,9 @@ impl PricingEngine {
         }
 
         if offline {
+            if let Some(data) = Self::read_stale_cache(&cache_path) {
+                return Self::parse_pricing(&data);
+            }
             eprintln!("[tokemon] Warning: no cached pricing data and --offline specified; costs will be $0.00");
             return Ok(Self {
                 models: HashMap::new(),
@@ -54,6 +57,14 @@ impl PricingEngine {
                 Self::parse_pricing(&data)
             }
             Err(e) => {
+                // Fall back to stale cache if available
+                if let Some(data) = Self::read_stale_cache(&cache_path) {
+                    eprintln!(
+                        "[tokemon] Warning: failed to fetch pricing: {}; using cached prices",
+                        e
+                    );
+                    return Self::parse_pricing(&data);
+                }
                 eprintln!(
                     "[tokemon] Warning: failed to fetch pricing: {}; costs will be $0.00",
                     e
@@ -65,38 +76,43 @@ impl PricingEngine {
         }
     }
 
-    pub fn calculate_cost(&self, entry: &Record) -> f64 {
-        // If entry already has a cost, use it
-        if let Some(cost) = entry.cost_usd {
-            if cost > 0.0 {
-                return cost;
-            }
-        }
-
-        let model = match &entry.model {
-            Some(m) if !m.is_empty() => m.as_str(),
-            _ => return 0.0,
-        };
-
-        let pricing = match self.find_pricing(model) {
-            Some(p) => p,
-            None => return 0.0,
-        };
-
-        let mut cost = 0.0;
-        cost += entry.input_tokens as f64 * pricing.input_cost_per_token.unwrap_or(0.0);
-        cost += entry.output_tokens as f64 * pricing.output_cost_per_token.unwrap_or(0.0);
-        cost += entry.cache_read_tokens as f64 * pricing.cache_read_cost.unwrap_or(0.0);
-        cost += entry.cache_creation_tokens as f64 * pricing.cache_creation_cost.unwrap_or(0.0);
-        // thinking_tokens charged at output rate
-        cost += entry.thinking_tokens as f64 * pricing.output_cost_per_token.unwrap_or(0.0);
-        cost
-    }
-
-    /// Apply costs to all entries in-place
+    /// Apply costs to all entries in-place, caching pricing lookups per model.
     pub fn apply_costs(&self, entries: &mut [Record]) {
+        use std::collections::HashMap;
+        let mut pricing_cache: HashMap<&str, Option<&ModelPricing>> = HashMap::new();
+
         for entry in entries.iter_mut() {
-            let cost = self.calculate_cost(entry);
+            // If entry already has a cost, keep it
+            if let Some(cost) = entry.cost_usd {
+                if cost > 0.0 {
+                    continue;
+                }
+            }
+
+            let model = match &entry.model {
+                Some(m) if !m.is_empty() => m.as_str(),
+                _ => {
+                    entry.cost_usd = Some(0.0);
+                    continue;
+                }
+            };
+
+            let pricing = pricing_cache
+                .entry(model)
+                .or_insert_with(|| self.find_pricing(model));
+
+            let cost = match pricing {
+                Some(p) => {
+                    let mut c = 0.0;
+                    c += entry.input_tokens as f64 * p.input_cost_per_token.unwrap_or(0.0);
+                    c += entry.output_tokens as f64 * p.output_cost_per_token.unwrap_or(0.0);
+                    c += entry.cache_read_tokens as f64 * p.cache_read_cost.unwrap_or(0.0);
+                    c += entry.cache_creation_tokens as f64 * p.cache_creation_cost.unwrap_or(0.0);
+                    c += entry.thinking_tokens as f64 * p.output_cost_per_token.unwrap_or(0.0);
+                    c
+                }
+                None => 0.0,
+            };
             entry.cost_usd = Some(cost);
         }
     }
@@ -171,8 +187,19 @@ impl PricingEngine {
             .and_then(|_| fs::read_to_string(path).ok())
     }
 
+    /// Read cache regardless of age — used as fallback when remote fetch fails.
+    fn read_stale_cache(path: &Path) -> Option<String> {
+        fs::read_to_string(path).ok()
+    }
+
     fn fetch_remote() -> Result<String> {
-        let resp = reqwest::blocking::get(PRICING_URL)
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| TokemonError::PricingFetch(e.to_string()))?;
+        let resp = client
+            .get(PRICING_URL)
+            .send()
             .map_err(|e| TokemonError::PricingFetch(e.to_string()))?;
         let text = resp
             .text()

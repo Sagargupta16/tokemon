@@ -57,14 +57,17 @@ impl super::Source for QwenSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self
-            .base_dir
-            .join("tmp/**/session.json")
-            .display()
-            .to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        // Structure: tmp/{project}/session.json (same layout as Gemini)
+        let tmp_dir = self.base_dir.join("tmp");
+        let Ok(projects) = fs::read_dir(&tmp_dir) else {
+            return Vec::new();
+        };
+        projects
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path().join("session.json"))
+            .filter(|p| p.is_file())
+            .collect()
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {

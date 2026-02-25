@@ -60,21 +60,29 @@ impl super::Source for PiAgentSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("**/*.jsonl").display().to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        // Structure: sessions/{project}/*.jsonl
+        let Ok(projects) = fs::read_dir(&self.base_dir) else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        for project in projects
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+        {
+            files.extend(super::discover::collect_by_ext(&project.path(), "jsonl"));
+        }
+        files
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
         let file = fs::File::open(path).map_err(TokemonError::Io)?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(64 * 1024, file);
         let session_id = timestamp::extract_session_id(path);
 
         let entries = reader
             .lines()
             .filter_map(|line| line.ok())
-            .filter(|line| !line.trim().is_empty())
+            .filter(|line| line.contains("\"message\"") && line.contains("\"assistant\""))
             .filter_map(|line| serde_json::from_str::<PiLine>(&line).ok())
             .filter(|parsed| parsed.line_type.as_deref() == Some("message"))
             .filter_map(|parsed| {

@@ -35,19 +35,22 @@ impl super::Source for CopilotSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        // Copilot chat sessions are in workspaceStorage
+        // Structure: workspaceStorage/{hash}/chatSessions/{uuid}.json
+        // Must target chatSessions/ specifically to avoid workspace.json etc.
         let storage_dirs = paths::vscode_global_storage_dirs();
         let mut files = Vec::new();
 
         for storage_dir in storage_dirs {
             if let Some(parent) = storage_dir.parent() {
                 let ws_storage = parent.join("workspaceStorage");
-                let pattern = ws_storage
-                    .join("*/chatSessions/*.json")
-                    .display()
-                    .to_string();
-                if let Ok(paths) = glob::glob(&pattern) {
-                    files.extend(paths.filter_map(|p| p.ok()));
+                let Ok(workspaces) = std::fs::read_dir(&ws_storage) else {
+                    continue;
+                };
+                for ws in workspaces.filter_map(|e| e.ok()) {
+                    let chat_dir = ws.path().join("chatSessions");
+                    if chat_dir.is_dir() {
+                        files.extend(super::discover::collect_by_ext(&chat_dir, "json"));
+                    }
                 }
             }
         }

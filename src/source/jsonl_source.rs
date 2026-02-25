@@ -26,6 +26,7 @@ pub trait JsonlSourceConfig: Send + Sync + 'static {
     const DISPLAY_NAME: &'static str;
     const HAS_CACHE_TOKENS: bool = false;
     const HAS_REQUEST_IDS: bool = false;
+    const MAX_DEPTH: usize = 5;
     fn base_dir() -> PathBuf;
 }
 
@@ -85,21 +86,18 @@ impl<C: JsonlSourceConfig> super::Source for JsonlSource<C> {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("**/*.jsonl").display().to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        super::discover::walk_by_ext(&self.base_dir, "jsonl", C::MAX_DEPTH)
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
         let file = fs::File::open(path).map_err(TokemonError::Io)?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(64 * 1024, file);
         let session_id = timestamp::extract_session_id(path);
 
         let entries = reader
             .lines()
             .filter_map(|line| line.ok())
-            .filter(|line| !line.trim().is_empty())
+            .filter(|line| line.contains("\"assistant\"") || line.contains("\"response\""))
             .filter_map(|line| serde_json::from_str::<JsonlLine>(&line).ok())
             .filter(|parsed| {
                 matches!(

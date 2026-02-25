@@ -56,22 +56,31 @@ impl super::Source for GeminiSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        // Check both patterns
-        let patterns = [
-            self.base_dir
-                .join("tmp/**/chats/session-*.json")
-                .display()
-                .to_string(),
-            self.base_dir
-                .join("tmp/**/session.json")
-                .display()
-                .to_string(),
-        ];
-
+        // Structure: tmp/{project}/chats/session-*.json
+        //            tmp/{project}/session.json
+        let tmp_dir = self.base_dir.join("tmp");
         let mut files = Vec::new();
-        for pattern in &patterns {
-            if let Ok(paths) = glob::glob(pattern) {
-                files.extend(paths.filter_map(|p| p.ok()));
+        let Ok(projects) = fs::read_dir(&tmp_dir) else {
+            return files;
+        };
+        for project in projects
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+        {
+            let project_path = project.path();
+            // Check for session.json directly in project dir
+            let session_file = project_path.join("session.json");
+            if session_file.is_file() {
+                files.push(session_file);
+            }
+            // Check for session-*.json in chats/ subdir
+            let chats_dir = project_path.join("chats");
+            for f in super::discover::collect_by_ext(&chats_dir, "json") {
+                if f.file_name()
+                    .map_or(false, |name| name.to_string_lossy().starts_with("session"))
+                {
+                    files.push(f);
+                }
             }
         }
         files

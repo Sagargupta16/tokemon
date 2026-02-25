@@ -50,15 +50,30 @@ impl super::Source for CodexSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("**/*.jsonl").display().to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        // Structure: sessions/YYYY/MM/DD/rollout-*.jsonl
+        let mut files = Vec::new();
+        let Ok(years) = fs::read_dir(&self.base_dir) else {
+            return files;
+        };
+        for year in years.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+            let Ok(months) = fs::read_dir(year.path()) else {
+                continue;
+            };
+            for month in months.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+                let Ok(days) = fs::read_dir(month.path()) else {
+                    continue;
+                };
+                for day in days.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+                    files.extend(super::discover::collect_by_ext(&day.path(), "jsonl"));
+                }
+            }
+        }
+        files
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
         let file = fs::File::open(path).map_err(TokemonError::Io)?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(64 * 1024, file);
         let mut entries = Vec::new();
 
         let session_id = timestamp::extract_session_id(path);
@@ -72,7 +87,8 @@ impl super::Source for CodexSource {
                 Err(_) => continue,
             };
 
-            if line.trim().is_empty() {
+            // Pre-filter: only parse lines that could be turn_context or event_msg
+            if !line.contains("\"turn_context\"") && !line.contains("\"event_msg\"") {
                 continue;
             }
 

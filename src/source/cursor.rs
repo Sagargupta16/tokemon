@@ -31,10 +31,13 @@ impl super::Source for CursorSource {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let pattern = self.base_dir.join("usage*.csv").display().to_string();
-        glob::glob(&pattern)
-            .map(|paths| paths.filter_map(|p| p.ok()).collect())
-            .unwrap_or_default()
+        super::discover::collect_by_ext(&self.base_dir, "csv")
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .map_or(false, |f| f.to_string_lossy().starts_with("usage"))
+            })
+            .collect()
     }
 
     fn parse_file(&self, path: &Path) -> Result<Vec<Record>> {
