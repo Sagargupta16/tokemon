@@ -6,7 +6,7 @@ use tabled::settings::{Alignment, Modify, Style};
 use tabled::{Table, Tabled};
 
 use crate::display;
-use crate::types::Report;
+use crate::types::{Report, SessionReport};
 
 // ---------------------------------------------------------------------------
 // Color helpers
@@ -686,6 +686,146 @@ fn format_tokens(n: u64) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+// ---------------------------------------------------------------------------
+// CSV output
+// ---------------------------------------------------------------------------
+
+fn csv_quote(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+pub fn print_csv_compact(report: &Report) {
+    println!("date,input,output,cache_write,cache_read,total_tokens,cost");
+    for s in &report.summaries {
+        let total = s.total_input + s.total_output + s.total_cache + s.total_thinking;
+        println!(
+            "{},{},{},{},{},{},{:.2}",
+            csv_quote(&s.label),
+            s.total_input,
+            s.total_output,
+            s.total_cache_creation(),
+            s.total_cache_read(),
+            total,
+            s.total_cost
+        );
+    }
+}
+
+pub fn print_csv_breakdown(report: &Report) {
+    println!("date,model,api_provider,client,input,output,cache_write,cache_read,total_tokens,cost");
+    for s in &report.summaries {
+        for m in &s.models {
+            let model_total = m.input_tokens
+                + m.output_tokens
+                + m.cache_read_tokens
+                + m.cache_creation_tokens
+                + m.thinking_tokens;
+            println!(
+                "{},{},{},{},{},{},{},{},{},{:.2}",
+                csv_quote(&s.label),
+                csv_quote(&display::display_model(&m.model)),
+                csv_quote(&display::infer_api_provider(&m.model)),
+                csv_quote(&display::display_client(&m.provider)),
+                m.input_tokens,
+                m.output_tokens,
+                m.cache_creation_tokens,
+                m.cache_read_tokens,
+                model_total,
+                m.cost_usd
+            );
+        }
+    }
+}
+
+pub fn print_csv_sessions(report: &SessionReport) {
+    println!("session_id,date,client,model,input,output,cache_write,cache_read,total_tokens,cost");
+    for s in &report.sessions {
+        let sid = if s.session_id.len() > 8 {
+            &s.session_id[..8]
+        } else {
+            &s.session_id
+        };
+        println!(
+            "{},{},{},{},{},{},{},{},{},{:.2}",
+            csv_quote(sid),
+            s.date.format("%Y-%m-%d"),
+            csv_quote(&s.client),
+            csv_quote(&s.dominant_model),
+            s.input_tokens,
+            s.output_tokens,
+            s.cache_creation_tokens,
+            s.cache_read_tokens,
+            s.total_tokens,
+            s.cost
+        );
+    }
+}
+
+pub fn print_sessions_table(report: &SessionReport) {
+    let color = use_color();
+
+    let mut header: Vec<String> = vec![
+        "Session".into(),
+        "Date".into(),
+        "Client".into(),
+        "Model".into(),
+        "Total Tokens".into(),
+        "Cost".into(),
+    ];
+    style_header(&mut header, color);
+
+    let mut builder = Builder::default();
+    builder.push_record(header);
+
+    for s in &report.sessions {
+        let sid = if s.session_id.len() > 8 {
+            &s.session_id[..8]
+        } else {
+            &s.session_id
+        };
+        let row: Vec<String> = vec![
+            sid.to_string(),
+            s.date.format("%Y-%m-%d").to_string(),
+            s.client.clone(),
+            s.dominant_model.clone(),
+            format_tokens_styled(s.total_tokens, color),
+            format_cost_styled(s.cost, color),
+        ];
+        builder.push_record(row);
+    }
+
+    let count_label = format!("TOTAL ({})", report.sessions.len());
+    let mut row: Vec<String> = vec![
+        count_label,
+        String::new(),
+        String::new(),
+        String::new(),
+        format_tokens(report.total_tokens),
+        format_cost(report.total_cost),
+    ];
+    bold_row(&mut row, color);
+    builder.push_record(row);
+
+    let table = builder
+        .build()
+        .with(Style::rounded())
+        .with(Modify::new(Columns::new(4..)).with(Alignment::right()))
+        .to_string();
+
+    println!("{}", table);
+}
+
+pub fn print_sessions_json(report: &SessionReport) {
+    match serde_json::to_string_pretty(report) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("[tokemon] Error serializing sessions: {}", e),
+    }
 }
 
 fn format_cost(cost: f64) -> String {

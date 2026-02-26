@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use chrono::{Datelike, NaiveDate};
 
-use crate::types::{DailySummary, ModelUsage, Record};
+use crate::display;
+use crate::types::{DailySummary, ModelUsage, Record, SessionSummary};
 
 /// Group entries by date, then by model within each date
 pub fn aggregate_daily(entries: &[Record]) -> Vec<DailySummary> {
@@ -59,6 +60,75 @@ pub fn filter_by_date(
             since.map_or(true, |s| date >= s) && until.map_or(true, |u| date <= u)
         })
         .collect()
+}
+
+/// Group entries by session_id, compute totals per session
+pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
+    let mut grouped: BTreeMap<&str, Vec<&Record>> = BTreeMap::new();
+
+    for entry in entries {
+        if let Some(ref sid) = entry.session_id {
+            grouped.entry(sid.as_str()).or_default().push(entry);
+        }
+    }
+
+    let mut sessions: Vec<SessionSummary> = grouped
+        .into_iter()
+        .map(|(sid, records)| {
+            let mut input = 0u64;
+            let mut output = 0u64;
+            let mut cache_read = 0u64;
+            let mut cache_creation = 0u64;
+            let mut thinking = 0u64;
+            let mut cost = 0.0f64;
+            let mut model_tokens: BTreeMap<&str, u64> = BTreeMap::new();
+            let mut earliest = records[0].timestamp;
+            let mut client = records[0].provider.as_str();
+
+            for r in &records {
+                input += r.input_tokens;
+                output += r.output_tokens;
+                cache_read += r.cache_read_tokens;
+                cache_creation += r.cache_creation_tokens;
+                thinking += r.thinking_tokens;
+                cost += r.cost_usd.unwrap_or(0.0);
+
+                let model = r.model.as_deref().unwrap_or("unknown");
+                *model_tokens.entry(model).or_default() += r.total_tokens();
+
+                if r.timestamp < earliest {
+                    earliest = r.timestamp;
+                    client = r.provider.as_str();
+                }
+            }
+
+            let total = input + output + cache_read + cache_creation + thinking;
+
+            let dominant_model = model_tokens
+                .into_iter()
+                .max_by_key(|(_, tokens)| *tokens)
+                .map(|(m, _)| m)
+                .unwrap_or("unknown");
+
+            SessionSummary {
+                session_id: sid.to_string(),
+                date: earliest.date_naive(),
+                client: display::display_client(client),
+                dominant_model: display::display_model(dominant_model),
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_tokens: cache_read,
+                cache_creation_tokens: cache_creation,
+                thinking_tokens: thinking,
+                total_tokens: total,
+                cost,
+            }
+        })
+        .collect();
+
+    // Sort by cost descending
+    sessions.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    sessions
 }
 
 fn group_by_date<F>(entries: &[Record], key_fn: F) -> BTreeMap<NaiveDate, (String, Vec<&Record>)>

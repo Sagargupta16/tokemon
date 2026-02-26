@@ -31,6 +31,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Output as CSV
+    #[arg(long, global = true, conflicts_with = "json")]
+    pub csv: bool,
+
     /// Display mode: breakdown (per-model) or compact (per-date)
     #[arg(short = 'd', long, global = true, value_enum)]
     pub display: Option<DisplayMode>,
@@ -120,4 +124,18 @@ pub enum Commands {
     Discover,
     /// Generate default config file at ~/.config/tokemon/config.toml
     Init,
+    /// Show per-session cost breakdown
+    Sessions {
+        /// Show top N sessions by cost
+        #[arg(long, default_value = "20")]
+        top: usize,
+    },
+    /// Delete old preserved data from the cache
+    Prune {
+        /// Delete preserved entries before this date (YYYY-MM-DD)
+        #[arg(long)]
+        before: NaiveDate,
+    },
+    /// Start MCP (Model Context Protocol) server over stdio
+    Mcp,
 }

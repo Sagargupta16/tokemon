@@ -8,6 +8,7 @@ mod cost;
 mod dedup;
 mod display;
 mod error;
+mod mcp;
 mod pacemaker;
 mod paths;
 mod render;
@@ -20,7 +21,7 @@ use cache::Cache;
 use cli::{Cli, Commands};
 use config::Config;
 use source::SourceSet;
-use types::Report;
+use types::{Report, SessionReport};
 
 const REDISCOVERY_INTERVAL_SECS: u64 = 30;
 
@@ -38,6 +39,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Monthly => cmd_report(&cli, &config, "monthly"),
         Commands::Statusline { period } => cmd_statusline(&cli, &config, *period),
         Commands::Budget => cmd_budget(&cli, &config),
+        Commands::Sessions { top } => cmd_sessions(&cli, &config, *top),
+        Commands::Prune { before } => cmd_prune(*before),
+        Commands::Mcp => mcp::run(&cli, &config),
     }
 }
 
@@ -80,7 +84,7 @@ fn resolve_providers<'a>(cli: &'a Cli, config: &'a Config) -> &'a [String] {
     }
 }
 
-fn load_and_price(
+pub(crate) fn load_and_price(
     cli: &Cli,
     config: &Config,
     force_offline: bool,
@@ -119,15 +123,23 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
     let mut entries = load_and_price(cli, config, false)?;
 
     if entries.is_empty() {
+        let empty_report = Report {
+            period: period.to_string(),
+            generated_at: Utc::now(),
+            providers_found: Vec::new(),
+            summaries: Vec::new(),
+            total_cost: 0.0,
+            total_tokens: 0,
+        };
         if cli.json {
-            render::print_json(&Report {
-                period: period.to_string(),
-                generated_at: Utc::now(),
-                providers_found: Vec::new(),
-                summaries: Vec::new(),
-                total_cost: 0.0,
-                total_tokens: 0,
-            });
+            render::print_json(&empty_report);
+        } else if cli.csv {
+            let breakdown = cli.display_mode(config) == cli::DisplayMode::Breakdown;
+            if breakdown {
+                render::print_csv_breakdown(&empty_report);
+            } else {
+                render::print_csv_compact(&empty_report);
+            }
         } else {
             println!("No usage data found.");
             if resolve_providers(cli, config).is_empty() {
@@ -171,6 +183,13 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
 
     if cli.json {
         render::print_json(&report);
+    } else if cli.csv {
+        let breakdown = cli.display_mode(config) == cli::DisplayMode::Breakdown;
+        if breakdown {
+            render::print_csv_breakdown(&report);
+        } else {
+            render::print_csv_compact(&report);
+        }
     } else {
         let breakdown = cli.display_mode(config) == cli::DisplayMode::Breakdown;
         render::print_table(&report, breakdown, &config.columns);
@@ -242,6 +261,61 @@ fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     let entries = load_and_price(cli, config, false)?;
     let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
     render::print_budget(daily, weekly, monthly);
+    Ok(())
+}
+
+fn cmd_sessions(cli: &Cli, config: &Config, top: usize) -> anyhow::Result<()> {
+    let entries = load_and_price(cli, config, false)?;
+
+    if entries.is_empty() {
+        let empty_report = SessionReport {
+            generated_at: Utc::now(),
+            sessions: Vec::new(),
+            total_cost: 0.0,
+            total_tokens: 0,
+        };
+        if cli.json {
+            render::print_sessions_json(&empty_report);
+        } else if cli.csv {
+            render::print_csv_sessions(&empty_report);
+        } else {
+            println!("No usage data found.");
+        }
+        return Ok(());
+    }
+
+    let entries = rollup::filter_by_date(entries, cli.since, cli.until);
+    let mut sessions = rollup::aggregate_by_session(&entries);
+    sessions.truncate(top);
+
+    let total_cost: f64 = sessions.iter().map(|s| s.cost).sum();
+    let total_tokens: u64 = sessions.iter().map(|s| s.total_tokens).sum();
+
+    let report = SessionReport {
+        generated_at: Utc::now(),
+        sessions,
+        total_cost,
+        total_tokens,
+    };
+
+    if cli.json {
+        render::print_sessions_json(&report);
+    } else if cli.csv {
+        render::print_csv_sessions(&report);
+    } else {
+        render::print_sessions_table(&report);
+    }
+
+    Ok(())
+}
+
+fn cmd_prune(before: NaiveDate) -> anyhow::Result<()> {
+    let cache = Cache::open()?;
+    let deleted = cache.prune_before(before)?;
+    println!(
+        "Pruned {} preserved entries with timestamps before {}.",
+        deleted, before
+    );
     Ok(())
 }
 
@@ -320,19 +394,39 @@ fn parse_with_cache(
         cache.cached_file_mtimes()
     };
 
-    // Find files that need (re)parsing
-    let files_to_parse: Vec<_> = providers
+    // Discover all files and collect their paths for preservation tracking
+    let all_discovered: Vec<(&dyn source::Source, std::path::PathBuf)> = providers
         .iter()
         .flat_map(|provider| {
-            provider.discover_files().into_iter().filter_map(|file| {
-                let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
-                let file_key = file.display().to_string();
-                if cached_mtimes.get(&file_key) == Some(&mtime) {
-                    None // Cache is fresh
-                } else {
-                    Some((*provider, file, mtime))
-                }
-            })
+            provider
+                .discover_files()
+                .into_iter()
+                .map(move |file| (*provider, file))
+        })
+        .collect();
+
+    let discovered_files: std::collections::HashSet<String> = all_discovered
+        .iter()
+        .map(|(_, file)| file.display().to_string())
+        .collect();
+
+    // Mark entries from deleted files as preserved (only when discovering all providers,
+    // otherwise we'd incorrectly mark entries from non-filtered providers)
+    if filter.is_empty() {
+        cache.mark_preserved(&discovered_files);
+    }
+
+    // Find files that need (re)parsing
+    let files_to_parse: Vec<_> = all_discovered
+        .into_iter()
+        .filter_map(|(provider, file)| {
+            let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
+            let file_key = file.display().to_string();
+            if cached_mtimes.get(&file_key) == Some(&mtime) {
+                None
+            } else {
+                Some((provider, file, mtime))
+            }
         })
         .collect();
 

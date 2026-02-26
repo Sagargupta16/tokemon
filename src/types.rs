@@ -118,3 +118,28 @@ pub struct Report {
     pub total_cost: f64,
     pub total_tokens: u64,
 }
+
+/// Summary for a single coding session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub date: NaiveDate,
+    pub client: String,
+    pub dominant_model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub thinking_tokens: u64,
+    pub total_tokens: u64,
+    pub cost: f64,
+}
+
+/// Report structure for session output
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionReport {
+    pub generated_at: DateTime<Utc>,
+    pub sessions: Vec<SessionSummary>,
+    pub total_cost: f64,
+    pub total_tokens: u64,
+}

@@ -65,6 +65,20 @@ impl Cache {
                 value TEXT NOT NULL
             );",
         )?;
+
+        // Migration: add preserved column if missing
+        let has_preserved: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('usage_entries') WHERE name='preserved'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .unwrap_or(0)
+            > 0;
+        if !has_preserved {
+            self.conn.execute_batch(
+                "ALTER TABLE usage_entries ADD COLUMN preserved INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -248,6 +262,45 @@ impl Cache {
             "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('last_discovery_at', ?1)",
             params![now.to_string()],
         );
+    }
+
+    /// Mark entries as preserved when their source files no longer exist on disk.
+    /// `discovered_files` is the set of currently-existing source file paths.
+    pub fn mark_preserved(&self, discovered_files: &std::collections::HashSet<String>) {
+        if discovered_files.is_empty() {
+            return;
+        }
+
+        // Get all distinct source files in the cache
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT DISTINCT source_file FROM usage_entries WHERE preserved = 0")
+        else {
+            return;
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+            return;
+        };
+
+        let cached_files: Vec<String> = rows.flatten().collect();
+        for file in &cached_files {
+            if !discovered_files.contains(file) {
+                let _ = self.conn.execute(
+                    "UPDATE usage_entries SET preserved = 1 WHERE source_file = ?1 AND preserved = 0",
+                    params![file],
+                );
+            }
+        }
+    }
+
+    /// Delete preserved entries with timestamps before the given date.
+    pub fn prune_before(&self, before: NaiveDate) -> anyhow::Result<usize> {
+        let before_str = before.to_string();
+        let deleted = self.conn.execute(
+            "DELETE FROM usage_entries WHERE preserved = 1 AND timestamp < ?1",
+            params![before_str],
+        )?;
+        Ok(deleted)
     }
 
     /// Single source of truth for mapping a SQLite row to a Record.
