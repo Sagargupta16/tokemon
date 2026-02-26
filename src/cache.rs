@@ -338,3 +338,188 @@ pub fn file_mtime_secs(path: &Path) -> Option<i64> {
         .ok()
         .map(|d| d.as_secs() as i64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Create an in-memory cache for testing.
+    fn test_cache() -> Cache {
+        let conn = Connection::open_in_memory().unwrap();
+        let cache = Cache { conn };
+        cache.init_schema().unwrap();
+        cache
+    }
+
+    fn make_record(provider: &str, timestamp: &str, session_id: Option<&str>) -> Record {
+        Record {
+            timestamp: DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .to_utc(),
+            provider: provider.to_string(),
+            model: Some("test-model".to_string()),
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            thinking_tokens: 0,
+            cost_usd: Some(0.01),
+            message_id: None,
+            request_id: None,
+            session_id: session_id.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_store_and_load() {
+        let cache = test_cache();
+        let entries = vec![
+            make_record("claude-code", "2026-02-20T10:00:00Z", Some("sess-1")),
+            make_record("claude-code", "2026-02-21T10:00:00Z", Some("sess-1")),
+        ];
+
+        cache
+            .store_file_entries(Path::new("/tmp/test.jsonl"), 1000, &entries)
+            .unwrap();
+
+        let loaded = cache.load_all_entries().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].provider, "claude-code");
+        assert_eq!(loaded[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn test_mark_preserved() {
+        let cache = test_cache();
+
+        // Store entries from two different files
+        let entries_a = vec![make_record("claude-code", "2026-02-20T10:00:00Z", None)];
+        let entries_b = vec![make_record("codex", "2026-02-21T10:00:00Z", None)];
+
+        cache
+            .store_file_entries(Path::new("/data/file_a.jsonl"), 1000, &entries_a)
+            .unwrap();
+        cache
+            .store_file_entries(Path::new("/data/file_b.jsonl"), 2000, &entries_b)
+            .unwrap();
+
+        // Only file_a still exists on disk
+        let discovered: HashSet<String> =
+            ["/data/file_a.jsonl".to_string()].into_iter().collect();
+
+        cache.mark_preserved(&discovered);
+
+        // file_b's entries should be preserved=1
+        let preserved_count: i64 = cache
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE preserved = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_count, 1);
+
+        // file_a's entries should still be preserved=0
+        let active_count: i64 = cache
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE preserved = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_count, 1);
+
+        // All entries still load (preserved entries are regular rows)
+        let all = cache.load_all_entries().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_mark_preserved_empty_discovered_is_noop() {
+        let cache = test_cache();
+        let entries = vec![make_record("claude-code", "2026-02-20T10:00:00Z", None)];
+        cache
+            .store_file_entries(Path::new("/data/file.jsonl"), 1000, &entries)
+            .unwrap();
+
+        // Empty discovered set should not mark anything
+        cache.mark_preserved(&HashSet::new());
+
+        let preserved_count: i64 = cache
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_entries WHERE preserved = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_count, 0);
+    }
+
+    #[test]
+    fn test_prune_before() {
+        let cache = test_cache();
+
+        let entries = vec![
+            make_record("claude-code", "2025-06-15T10:00:00Z", None),
+            make_record("claude-code", "2026-02-20T10:00:00Z", None),
+        ];
+        cache
+            .store_file_entries(Path::new("/data/old.jsonl"), 1000, &entries)
+            .unwrap();
+
+        // Mark all as preserved (simulating file deletion)
+        // Empty discovered set would be a no-op due to guard, so mark manually
+        cache
+            .conn
+            .execute(
+                "UPDATE usage_entries SET preserved = 1",
+                [],
+            )
+            .unwrap();
+
+        // Prune entries before 2026-01-01
+        let deleted = cache
+            .prune_before(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap())
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        // Only the 2026 entry should remain
+        let remaining = cache.load_all_entries().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0].timestamp.date_naive().to_string(),
+            "2026-02-20"
+        );
+    }
+
+    #[test]
+    fn test_prune_ignores_non_preserved() {
+        let cache = test_cache();
+
+        let entries = vec![make_record("claude-code", "2025-06-15T10:00:00Z", None)];
+        cache
+            .store_file_entries(Path::new("/data/active.jsonl"), 1000, &entries)
+            .unwrap();
+
+        // preserved=0 (default), so prune should not delete it
+        let deleted = cache
+            .prune_before(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap())
+            .unwrap();
+        assert_eq!(deleted, 0);
+
+        let remaining = cache.load_all_entries().unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_preserved_column_migration_idempotent() {
+        // Calling init_schema twice should not error
+        let cache = test_cache();
+        cache.init_schema().unwrap();
+        cache.init_schema().unwrap();
+    }
+}

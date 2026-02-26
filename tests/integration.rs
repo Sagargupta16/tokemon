@@ -1,5 +1,6 @@
 use std::path::Path;
 use tokemon::source::Source;
+use tokemon::types::Record;
 
 #[test]
 fn test_claude_code_parse_fixture() {
@@ -209,4 +210,120 @@ fn test_dedup_key_generation() {
         ..entry_both
     };
     assert_eq!(entry_none.dedup_key(), None);
+}
+
+// --- Session aggregation tests ---
+
+fn make_record(
+    provider: &str,
+    model: &str,
+    timestamp: &str,
+    input: u64,
+    output: u64,
+    cost: f64,
+    session_id: Option<&str>,
+) -> Record {
+    Record {
+        timestamp: chrono::DateTime::parse_from_rfc3339(timestamp)
+            .unwrap()
+            .to_utc(),
+        provider: provider.to_string(),
+        model: Some(model.to_string()),
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        thinking_tokens: 0,
+        cost_usd: Some(cost),
+        message_id: None,
+        request_id: None,
+        session_id: session_id.map(String::from),
+    }
+}
+
+#[test]
+fn test_aggregate_by_session_basic() {
+    let entries = vec![
+        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T10:00:00Z", 100, 50, 1.0, Some("sess-aaa")),
+        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T11:00:00Z", 200, 100, 2.0, Some("sess-aaa")),
+        make_record("claude-code", "claude-sonnet-4-20250514", "2026-02-21T09:00:00Z", 50, 25, 0.5, Some("sess-bbb")),
+    ];
+
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+
+    assert_eq!(sessions.len(), 2);
+
+    // Sorted by cost descending: sess-aaa ($3.0) before sess-bbb ($0.5)
+    assert_eq!(sessions[0].session_id, "sess-aaa");
+    assert_eq!(sessions[0].cost, 3.0);
+    assert_eq!(sessions[0].input_tokens, 300);
+    assert_eq!(sessions[0].output_tokens, 150);
+    assert_eq!(sessions[0].total_tokens, 450);
+    assert_eq!(sessions[0].client, "Claude Code");
+    assert_eq!(sessions[0].dominant_model, "opus-4-1");
+    assert_eq!(sessions[0].date.to_string(), "2026-02-20");
+
+    assert_eq!(sessions[1].session_id, "sess-bbb");
+    assert_eq!(sessions[1].cost, 0.5);
+    assert_eq!(sessions[1].dominant_model, "sonnet-4");
+}
+
+#[test]
+fn test_aggregate_by_session_skips_no_session_id() {
+    let entries = vec![
+        make_record("claude-code", "claude-opus-4-1", "2026-02-20T10:00:00Z", 100, 50, 1.0, Some("sess-aaa")),
+        make_record("claude-code", "claude-opus-4-1", "2026-02-20T11:00:00Z", 200, 100, 2.0, None),
+    ];
+
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "sess-aaa");
+}
+
+#[test]
+fn test_aggregate_by_session_dominant_model() {
+    // Session with two models: opus has more tokens
+    let entries = vec![
+        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T10:00:00Z", 1000, 500, 5.0, Some("sess-mixed")),
+        make_record("claude-code", "claude-sonnet-4-20250514", "2026-02-20T11:00:00Z", 100, 50, 0.5, Some("sess-mixed")),
+    ];
+
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].dominant_model, "opus-4-1");
+}
+
+#[test]
+fn test_aggregate_by_session_empty() {
+    let entries: Vec<Record> = vec![];
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+    assert!(sessions.is_empty());
+}
+
+#[test]
+fn test_aggregate_by_session_date_is_earliest() {
+    let entries = vec![
+        make_record("claude-code", "claude-opus-4-1", "2026-02-22T15:00:00Z", 100, 50, 1.0, Some("sess-x")),
+        make_record("claude-code", "claude-opus-4-1", "2026-02-20T09:00:00Z", 200, 100, 2.0, Some("sess-x")),
+    ];
+
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+    assert_eq!(sessions[0].date.to_string(), "2026-02-20");
+}
+
+#[test]
+fn test_session_from_fixture() {
+    let provider = tokemon::source::claude_code::ClaudeCodeSource::new();
+    let path = Path::new("tests/fixtures/claude_sample.jsonl");
+    let entries = provider.parse_file(path).unwrap();
+    let entries = tokemon::dedup::deduplicate(entries);
+
+    // All entries get session_id = "claude_sample" from file stem
+    assert!(entries.iter().all(|e| e.session_id.as_deref() == Some("claude_sample")));
+
+    let sessions = tokemon::rollup::aggregate_by_session(&entries);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "claude_sample");
+    assert_eq!(sessions[0].total_tokens, 650 + 750 + 175); // three entries' totals
 }

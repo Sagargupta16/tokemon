@@ -903,4 +903,30 @@ mod tests {
         assert_eq!(format_tokens_styled(0, false), "0");
         assert_eq!(format_tokens_styled(1234, false), "1,234");
     }
+
+    #[test]
+    fn test_csv_quote_plain() {
+        assert_eq!(csv_quote("hello"), "hello");
+        assert_eq!(csv_quote("2026-02-20"), "2026-02-20");
+    }
+
+    #[test]
+    fn test_csv_quote_with_comma() {
+        assert_eq!(csv_quote("hello, world"), "\"hello, world\"");
+    }
+
+    #[test]
+    fn test_csv_quote_with_quotes() {
+        assert_eq!(csv_quote("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn test_csv_quote_with_newline() {
+        assert_eq!(csv_quote("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn test_csv_quote_empty() {
+        assert_eq!(csv_quote(""), "");
+    }
 }
