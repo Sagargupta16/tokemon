@@ -285,10 +285,12 @@ impl Cache {
         let cached_files: Vec<String> = rows.flatten().collect();
         for file in &cached_files {
             if !discovered_files.contains(file) {
-                let _ = self.conn.execute(
+                if let Err(e) = self.conn.execute(
                     "UPDATE usage_entries SET preserved = 1 WHERE source_file = ?1 AND preserved = 0",
                     params![file],
-                );
+                ) {
+                    eprintln!("[tokemon] Warning: failed to preserve entries for {}: {}", file, e);
+                }
             }
         }
     }

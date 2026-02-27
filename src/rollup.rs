@@ -127,7 +127,7 @@ pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
         .collect();
 
     // Sort by cost descending
-    sessions.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    sessions.sort_by(|a, b| b.cost.total_cmp(&a.cost));
     sessions
 }
 
