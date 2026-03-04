@@ -48,10 +48,7 @@ pub fn run(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         };
 
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(|m| m.as_str())
-            .unwrap_or("");
+        let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
         let response = match method {
             "initialize" => handle_initialize(&id),
@@ -160,10 +157,7 @@ fn handle_tools_list(id: &Value) -> Value {
 
 fn handle_tools_call(id: &Value, request: &Value, cli: &Cli, config: &Config) -> Value {
     let params = request.get("params").cloned().unwrap_or(json!({}));
-    let tool_name = params
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("");
+    let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     let result = match tool_name {

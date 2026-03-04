@@ -153,7 +153,7 @@ fn cmd_report(cli: &Cli, config: &Config, period: &str) -> anyhow::Result<()> {
 
     let mut providers_found: Vec<String> = entries
         .iter()
-        .map(|e| e.provider.clone())
+        .map(|e| e.provider.to_string())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -222,7 +222,7 @@ fn cmd_statusline(cli: &Cli, config: &Config, period: cli::StatuslinePeriod) -> 
         .iter()
         .filter(|e| e.timestamp.date_naive() >= since)
         .fold((0.0f64, 0u64), |(cost, tokens), e| {
-            providers_seen.insert(e.provider.as_str());
+            providers_seen.insert(&*e.provider);
             (cost + e.cost_usd.unwrap_or(0.0), tokens + e.total_tokens())
         });
     let provider_count = providers_seen.len();

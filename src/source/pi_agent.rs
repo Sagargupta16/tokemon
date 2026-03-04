@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -98,7 +99,7 @@ impl super::Source for PiAgentSource {
 
                 Some(Record {
                     timestamp: ts,
-                    provider: "pi-agent".to_string(),
+                    provider: Cow::Borrowed("pi-agent"),
                     model: message.model,
                     input_tokens: usage.input.unwrap_or(0),
                     output_tokens: usage.output.unwrap_or(0),

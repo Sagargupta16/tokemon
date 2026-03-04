@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod discover;
 pub mod droid;
 pub mod gemini;
+pub mod json_session_source;
 pub mod jsonl_source;
 pub mod kilo_code;
 pub mod kimi;

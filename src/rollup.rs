@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Datelike, NaiveDate};
 
@@ -64,7 +64,7 @@ pub fn filter_by_date(
 
 /// Group entries by session_id, compute totals per session
 pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
-    let mut grouped: BTreeMap<&str, Vec<&Record>> = BTreeMap::new();
+    let mut grouped: HashMap<&str, Vec<&Record>> = HashMap::new();
 
     for entry in entries {
         if let Some(ref sid) = entry.session_id {
@@ -81,9 +81,9 @@ pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
             let mut cache_creation = 0u64;
             let mut thinking = 0u64;
             let mut cost = 0.0f64;
-            let mut model_tokens: BTreeMap<&str, u64> = BTreeMap::new();
+            let mut model_tokens: HashMap<&str, u64> = HashMap::new();
             let mut earliest = records[0].timestamp;
-            let mut client = records[0].provider.as_str();
+            let mut client: &str = &records[0].provider;
 
             for r in &records {
                 input += r.input_tokens;
@@ -98,7 +98,7 @@ pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
 
                 if r.timestamp < earliest {
                     earliest = r.timestamp;
-                    client = r.provider.as_str();
+                    client = &r.provider;
                 }
             }
 
@@ -127,7 +127,7 @@ pub fn aggregate_by_session(entries: &[Record]) -> Vec<SessionSummary> {
         .collect();
 
     // Sort by cost descending
-    sessions.sort_by(|a, b| b.cost.total_cmp(&a.cost));
+    sessions.sort_unstable_by(|a, b| b.cost.total_cmp(&a.cost));
     sessions
 }
 
@@ -151,15 +151,15 @@ fn build_summaries(grouped: BTreeMap<NaiveDate, (String, Vec<&Record>)>) -> Vec<
     let mut summaries = Vec::new();
 
     for (date, (label, entries)) in grouped {
-        let mut model_map: BTreeMap<(&str, &str), ModelUsage> = BTreeMap::new();
+        let mut model_map: HashMap<(&str, &str), ModelUsage> = HashMap::new();
 
         for entry in &entries {
             let model_name = entry.model.as_deref().unwrap_or("unknown");
-            let key = (entry.provider.as_str(), model_name);
+            let key = (&*entry.provider, model_name);
 
             let mu = model_map.entry(key).or_insert_with(|| ModelUsage {
                 model: model_name.to_string(),
-                provider: entry.provider.clone(),
+                provider: entry.provider.to_string(),
                 ..Default::default()
             });
 

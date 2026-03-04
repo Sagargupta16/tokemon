@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, types::Value, Connection, Row};
 
+use std::borrow::Cow;
+
 use crate::paths;
 use crate::types::Record;
 
@@ -69,7 +71,9 @@ impl Cache {
         // Migration: add preserved column if missing
         let has_preserved: bool = self
             .conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('usage_entries') WHERE name='preserved'")?
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('usage_entries') WHERE name='preserved'",
+            )?
             .query_row([], |row| row.get::<_, i64>(0))
             .unwrap_or(0)
             > 0;
@@ -78,6 +82,11 @@ impl Cache {
                 "ALTER TABLE usage_entries ADD COLUMN preserved INTEGER NOT NULL DEFAULT 0;",
             )?;
         }
+
+        // Index on preserved — must be after the migration that adds the column
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_preserved_timestamp ON usage_entries(preserved, timestamp);",
+        )?;
 
         Ok(())
     }
@@ -204,7 +213,7 @@ impl Cache {
 
         for entry in entries {
             stmt.execute(params![
-                entry.provider,
+                &*entry.provider,
                 path_str,
                 mtime_secs,
                 entry.timestamp.to_rfc3339(),
@@ -313,15 +322,16 @@ impl Cache {
             .map(|dt| dt.to_utc())
             .unwrap_or_else(|_| Utc::now());
 
+        let provider: String = row.get(0)?;
         Ok(Record {
             timestamp,
-            provider: row.get(0)?,
+            provider: Cow::Owned(provider),
             model: row.get(2)?,
-            input_tokens: row.get::<_, i64>(3)? as u64,
-            output_tokens: row.get::<_, i64>(4)? as u64,
-            cache_read_tokens: row.get::<_, i64>(5)? as u64,
-            cache_creation_tokens: row.get::<_, i64>(6)? as u64,
-            thinking_tokens: row.get::<_, i64>(7)? as u64,
+            input_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+            output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
+            cache_read_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+            cache_creation_tokens: row.get::<_, i64>(6)?.max(0) as u64,
+            thinking_tokens: row.get::<_, i64>(7)?.max(0) as u64,
             cost_usd: row.get(8)?,
             message_id: row.get(9)?,
             request_id: row.get(10)?,
@@ -356,10 +366,8 @@ mod tests {
 
     fn make_record(provider: &str, timestamp: &str, session_id: Option<&str>) -> Record {
         Record {
-            timestamp: DateTime::parse_from_rfc3339(timestamp)
-                .unwrap()
-                .to_utc(),
-            provider: provider.to_string(),
+            timestamp: DateTime::parse_from_rfc3339(timestamp).unwrap().to_utc(),
+            provider: Cow::Owned(provider.to_string()),
             model: Some("test-model".to_string()),
             input_tokens: 100,
             output_tokens: 50,
@@ -407,8 +415,7 @@ mod tests {
             .unwrap();
 
         // Only file_a still exists on disk
-        let discovered: HashSet<String> =
-            ["/data/file_a.jsonl".to_string()].into_iter().collect();
+        let discovered: HashSet<String> = ["/data/file_a.jsonl".to_string()].into_iter().collect();
 
         cache.mark_preserved(&discovered);
 
@@ -477,10 +484,7 @@ mod tests {
         // Empty discovered set would be a no-op due to guard, so mark manually
         cache
             .conn
-            .execute(
-                "UPDATE usage_entries SET preserved = 1",
-                [],
-            )
+            .execute("UPDATE usage_entries SET preserved = 1", [])
             .unwrap();
 
         // Prune entries before 2026-01-01

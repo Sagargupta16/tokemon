@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -114,7 +115,7 @@ impl super::Source for ClaudeCodeSource {
 
                 Some(Record {
                     timestamp,
-                    provider: "claude-code".to_string(),
+                    provider: Cow::Borrowed("claude-code"),
                     model: message.model,
                     input_tokens: usage.input_tokens.unwrap_or(0),
                     output_tokens: usage.output_tokens.unwrap_or(0),

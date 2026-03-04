@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -167,7 +168,7 @@ impl super::Source for CodexSource {
 
                     entries.push(Record {
                         timestamp,
-                        provider: "codex".to_string(),
+                        provider: Cow::Borrowed("codex"),
                         model: current_model.clone(),
                         input_tokens: actual_input,
                         output_tokens: usage.output_tokens.unwrap_or(0),

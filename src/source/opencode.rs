@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -101,10 +102,10 @@ impl super::Source for OpenCodeSource {
                 let ts = timestamp::parse_timestamp_numeric(created_at)?;
                 Some(Record {
                     timestamp: ts,
-                    provider: "opencode".to_string(),
+                    provider: Cow::Borrowed("opencode"),
                     model,
-                    input_tokens: input_tokens as u64,
-                    output_tokens: output_tokens as u64,
+                    input_tokens: input_tokens.max(0) as u64,
+                    output_tokens: output_tokens.max(0) as u64,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
                     thinking_tokens: 0,

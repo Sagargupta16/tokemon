@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -102,7 +103,7 @@ impl ClineFormat {
 
             entries.push(Record {
                 timestamp,
-                provider: self.provider_name.to_string(),
+                provider: Cow::Borrowed(self.provider_name),
                 model: req_data.model,
                 input_tokens: req_data.tokens_in.unwrap_or(0),
                 output_tokens: req_data.tokens_out.unwrap_or(0),

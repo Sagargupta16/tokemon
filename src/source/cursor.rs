@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -57,7 +58,7 @@ impl super::Source for CursorSource {
 
                 Some(Record {
                     timestamp,
-                    provider: "cursor".to_string(),
+                    provider: Cow::Borrowed("cursor"),
                     model: if model.is_empty() {
                         None
                     } else {

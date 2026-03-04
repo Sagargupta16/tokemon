@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -5,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub timestamp: DateTime<Utc>,
-    pub provider: String,
+    pub provider: Cow<'static, str>,
     pub model: Option<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,

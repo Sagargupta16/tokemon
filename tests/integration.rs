@@ -157,7 +157,7 @@ fn test_usage_entry_total_tokens() {
 
     let entry = Record {
         timestamp: Utc::now(),
-        provider: "test".to_string(),
+        provider: "test".to_string().into(),
         model: None,
         input_tokens: 100,
         output_tokens: 50,
@@ -180,7 +180,7 @@ fn test_dedup_key_generation() {
 
     let entry_both = Record {
         timestamp: Utc::now(),
-        provider: "test".to_string(),
+        provider: "test".to_string().into(),
         model: Some("model-a".to_string()),
         input_tokens: 100,
         output_tokens: 50,
@@ -227,7 +227,7 @@ fn make_record(
         timestamp: chrono::DateTime::parse_from_rfc3339(timestamp)
             .unwrap()
             .to_utc(),
-        provider: provider.to_string(),
+        provider: provider.to_string().into(),
         model: Some(model.to_string()),
         input_tokens: input,
         output_tokens: output,
@@ -244,9 +244,33 @@ fn make_record(
 #[test]
 fn test_aggregate_by_session_basic() {
     let entries = vec![
-        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T10:00:00Z", 100, 50, 1.0, Some("sess-aaa")),
-        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T11:00:00Z", 200, 100, 2.0, Some("sess-aaa")),
-        make_record("claude-code", "claude-sonnet-4-20250514", "2026-02-21T09:00:00Z", 50, 25, 0.5, Some("sess-bbb")),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1-20250805",
+            "2026-02-20T10:00:00Z",
+            100,
+            50,
+            1.0,
+            Some("sess-aaa"),
+        ),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1-20250805",
+            "2026-02-20T11:00:00Z",
+            200,
+            100,
+            2.0,
+            Some("sess-aaa"),
+        ),
+        make_record(
+            "claude-code",
+            "claude-sonnet-4-20250514",
+            "2026-02-21T09:00:00Z",
+            50,
+            25,
+            0.5,
+            Some("sess-bbb"),
+        ),
     ];
 
     let sessions = tokemon::rollup::aggregate_by_session(&entries);
@@ -271,8 +295,24 @@ fn test_aggregate_by_session_basic() {
 #[test]
 fn test_aggregate_by_session_skips_no_session_id() {
     let entries = vec![
-        make_record("claude-code", "claude-opus-4-1", "2026-02-20T10:00:00Z", 100, 50, 1.0, Some("sess-aaa")),
-        make_record("claude-code", "claude-opus-4-1", "2026-02-20T11:00:00Z", 200, 100, 2.0, None),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1",
+            "2026-02-20T10:00:00Z",
+            100,
+            50,
+            1.0,
+            Some("sess-aaa"),
+        ),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1",
+            "2026-02-20T11:00:00Z",
+            200,
+            100,
+            2.0,
+            None,
+        ),
     ];
 
     let sessions = tokemon::rollup::aggregate_by_session(&entries);
@@ -285,8 +325,24 @@ fn test_aggregate_by_session_skips_no_session_id() {
 fn test_aggregate_by_session_dominant_model() {
     // Session with two models: opus has more tokens
     let entries = vec![
-        make_record("claude-code", "claude-opus-4-1-20250805", "2026-02-20T10:00:00Z", 1000, 500, 5.0, Some("sess-mixed")),
-        make_record("claude-code", "claude-sonnet-4-20250514", "2026-02-20T11:00:00Z", 100, 50, 0.5, Some("sess-mixed")),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1-20250805",
+            "2026-02-20T10:00:00Z",
+            1000,
+            500,
+            5.0,
+            Some("sess-mixed"),
+        ),
+        make_record(
+            "claude-code",
+            "claude-sonnet-4-20250514",
+            "2026-02-20T11:00:00Z",
+            100,
+            50,
+            0.5,
+            Some("sess-mixed"),
+        ),
     ];
 
     let sessions = tokemon::rollup::aggregate_by_session(&entries);
@@ -304,8 +360,24 @@ fn test_aggregate_by_session_empty() {
 #[test]
 fn test_aggregate_by_session_date_is_earliest() {
     let entries = vec![
-        make_record("claude-code", "claude-opus-4-1", "2026-02-22T15:00:00Z", 100, 50, 1.0, Some("sess-x")),
-        make_record("claude-code", "claude-opus-4-1", "2026-02-20T09:00:00Z", 200, 100, 2.0, Some("sess-x")),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1",
+            "2026-02-22T15:00:00Z",
+            100,
+            50,
+            1.0,
+            Some("sess-x"),
+        ),
+        make_record(
+            "claude-code",
+            "claude-opus-4-1",
+            "2026-02-20T09:00:00Z",
+            200,
+            100,
+            2.0,
+            Some("sess-x"),
+        ),
     ];
 
     let sessions = tokemon::rollup::aggregate_by_session(&entries);
@@ -320,7 +392,9 @@ fn test_session_from_fixture() {
     let entries = tokemon::dedup::deduplicate(entries);
 
     // All entries get session_id = "claude_sample" from file stem
-    assert!(entries.iter().all(|e| e.session_id.as_deref() == Some("claude_sample")));
+    assert!(entries
+        .iter()
+        .all(|e| e.session_id.as_deref() == Some("claude_sample")));
 
     let sessions = tokemon::rollup::aggregate_by_session(&entries);
     assert_eq!(sessions.len(), 1);

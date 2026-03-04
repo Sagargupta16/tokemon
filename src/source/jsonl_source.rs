@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
@@ -114,7 +115,7 @@ impl<C: JsonlSourceConfig> super::Source for JsonlSource<C> {
 
                 Some(Record {
                     timestamp,
-                    provider: C::NAME.to_string(),
+                    provider: Cow::Borrowed(C::NAME),
                     model: parsed.model,
                     input_tokens: usage.input_tokens.unwrap_or(0),
                     output_tokens: usage.output_tokens.unwrap_or(0),
