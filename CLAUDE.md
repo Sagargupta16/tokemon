@@ -23,19 +23,44 @@ Note: CI uses the same clippy flags above (see `.github/workflows/ci.yml`). Loca
 
 - **Remote**: `git@github-mm65x:mm65x/tokemon.git` (SSH)
 - **Identity**: `mm65x <mm65x@users.noreply.github.com>` (set in local git config)
-- **Branch**: `master` is the release branch. Use feature branches for non-trivial changes.
+
+### Branching
+
+- **`master`** — stable releases only. Tagged with `vX.Y.Z`. Protected branch.
+- **`develop`** — main development branch. All work merges here first.
+- **Feature/fix branches** — branch off `develop`, merge back via PR.
+
+### Workflow
+
+1. Create a feature branch from `develop`: `git checkout -b feat/my-feature develop`
+2. Push and open a PR to `develop`. CI runs automatically.
+3. Merge to `develop` when CI passes.
+4. When `develop` is ready for release, open a PR from `develop` → `master`.
+5. After merging to `master`, tag and push to trigger the release.
 
 ## CI / Release
 
-- **CI** (`.github/workflows/ci.yml`): Runs on push/PR to `master`. Checks fmt, clippy, and tests on Linux/macOS/Windows.
-- **Release** (`.github/workflows/release.yml`): Triggers on `v*` tags. Builds binaries for 5 targets (Linux x86/ARM, macOS x86/ARM, Windows), creates a GitHub release, and publishes to crates.io.
+- **CI** (`.github/workflows/ci.yml`): Runs on push/PR to `master` and `develop`. Checks fmt, clippy, and tests on Linux/macOS/Windows.
+- **Release** (`.github/workflows/release.yml`): Triggers on `v*` tags. Builds binaries for 5 targets, creates a GitHub release, and publishes to crates.io.
 
-To release:
+### Stable release (from `master`)
+
 ```bash
-# Update version in Cargo.toml if needed, then:
-git tag v0.1.0
-git push origin v0.1.0
+# Update version in Cargo.toml, commit, then:
+git tag v0.2.0
+git push origin v0.2.0
 ```
+
+Creates a full GitHub Release + publishes to crates.io.
+
+### Pre-release (from `develop`)
+
+```bash
+git tag v0.2.0-alpha.1
+git push origin v0.2.0-alpha.1
+```
+
+Creates a GitHub Release marked as pre-release. Does NOT publish to crates.io.
 
 ## Code Conventions
 
