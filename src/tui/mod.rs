@@ -1,8 +1,10 @@
 mod app;
+pub(crate) mod diff;
 mod event;
 mod terminal;
 mod theme;
 mod views;
+mod watcher;
 mod widgets;
 
 use std::time::Duration;
@@ -56,6 +58,11 @@ async fn run_async(config: &Config, scope: Scope, tick_secs: u64) -> anyhow::Res
         Duration::from_millis(1000 / RENDER_FPS),
     );
     events.start();
+
+    // Start the file watcher in the background.
+    // It will send Event::DataChanged when source files are modified.
+    let event_tx = events.sender();
+    watcher::start(event_tx, config.no_cost);
 
     // Main loop
     loop {

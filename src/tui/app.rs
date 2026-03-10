@@ -6,6 +6,7 @@ use crate::render::format_tokens_short;
 use crate::types::{DailySummary, ModelUsage, Record};
 use crate::{cost, rollup};
 
+use super::diff::{self, RowChange};
 use super::event::Event;
 
 // ── View scope ────────────────────────────────────────────────────────────
@@ -87,10 +88,16 @@ pub struct App {
     pub scroll_offset: u16,
     /// Whether the app should quit.
     pub should_quit: bool,
+    /// Whether the help overlay is shown.
+    pub show_help: bool,
+    /// Recent row changes detected by the diff engine (for animations).
+    pub recent_changes: Vec<RowChange>,
     /// Config reference.
     config: Config,
     /// Cached raw records for the current data load.
     cached_records: Vec<Record>,
+    /// Previous model snapshot for diffing.
+    prev_models: Vec<ModelUsage>,
 }
 
 impl App {
@@ -126,8 +133,11 @@ impl App {
             history_summaries: Vec::new(),
             scroll_offset: 0,
             should_quit: false,
+            show_help: false,
+            recent_changes: Vec::new(),
             config: config.clone(),
             cached_records: Vec::new(),
+            prev_models: Vec::new(),
         };
         app.refresh_data();
         app
@@ -147,10 +157,20 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // If help is shown, any key dismisses it
+        if self.show_help {
+            self.show_help = false;
+            return true;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.should_quit = true;
                 false
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                true
             }
             KeyCode::Char('t') => {
                 self.scope = Scope::Today;
@@ -198,7 +218,16 @@ impl App {
         let records = load_records_from_cache(&self.config);
         self.cached_records = records;
         self.recompute_cards();
+
+        // Snapshot current models before recomputing for diff
+        let prev = std::mem::take(&mut self.prev_models);
         self.recompute_detail();
+
+        // Compute diff against previous state
+        self.recent_changes = diff::diff(&prev, &self.detail_models);
+
+        // Save current models for next diff
+        self.prev_models = self.detail_models.clone();
     }
 
     fn recompute_cards(&mut self) {
