@@ -331,11 +331,7 @@ fn render_breakdown(report: &Report, color: bool, cols: &BreakdownCols) -> Strin
         };
 
         for (i, model) in summary.models.iter().enumerate() {
-            let model_total = model.input_tokens
-                + model.output_tokens
-                + model.cache_read_tokens
-                + model.cache_creation_tokens
-                + model.thinking_tokens;
+            let model_total = model.total_tokens();
 
             let label = match &needs_suffix[i] {
                 Some(suffix) => format!("  {} ({})", shortened[i], suffix),
@@ -343,12 +339,7 @@ fn render_breakdown(report: &Report, color: bool, cols: &BreakdownCols) -> Strin
             };
             let mut row: Vec<String> = vec![String::new(), label];
             if show_api {
-                let raw = if model.raw_model.is_empty() {
-                    &model.model
-                } else {
-                    &model.raw_model
-                };
-                row.push(display::infer_api_provider(raw));
+                row.push(display::infer_api_provider(model.effective_raw_model()));
             }
             if show_client {
                 row.push(display::display_client(&model.provider));
@@ -429,12 +420,7 @@ fn build_disambiguation_suffixes(
 
             let mut parts = Vec::new();
             if !show_api {
-                let raw = if models[i].raw_model.is_empty() {
-                    &models[i].model
-                } else {
-                    &models[i].raw_model
-                };
-                let api = display::infer_api_provider(raw);
+                let api = display::infer_api_provider(models[i].effective_raw_model());
                 if !api.is_empty() {
                     parts.push(api);
                 }
@@ -732,20 +718,12 @@ pub fn print_csv_breakdown(report: &Report) {
     println!("date,model,api_provider,client,input,output,cache_write,cache_read,thinking,total_tokens,cost");
     for s in &report.summaries {
         for m in &s.models {
-            let model_total = m.input_tokens
-                + m.output_tokens
-                + m.cache_read_tokens
-                + m.cache_creation_tokens
-                + m.thinking_tokens;
+            let model_total = m.total_tokens();
             println!(
                 "{},{},{},{},{},{},{},{},{},{},{:.2}",
                 csv_quote(&s.label),
                 csv_quote(&display::display_model(&m.model)),
-                csv_quote(&display::infer_api_provider(if m.raw_model.is_empty() {
-                    &m.model
-                } else {
-                    &m.raw_model
-                })),
+                csv_quote(&display::infer_api_provider(m.effective_raw_model())),
                 csv_quote(&display::display_client(&m.provider)),
                 m.input_tokens,
                 m.output_tokens,

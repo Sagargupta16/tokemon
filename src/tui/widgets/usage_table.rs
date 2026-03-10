@@ -98,20 +98,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             // Model sub-rows under each period header
             {
                 for mu in &summary.models {
-                    let model_total = mu.input_tokens
-                        + mu.output_tokens
-                        + mu.cache_read_tokens
-                        + mu.cache_creation_tokens
-                        + mu.thinking_tokens;
-                    let raw = if mu.raw_model.is_empty() {
-                        &mu.model
-                    } else {
-                        &mu.raw_model
-                    };
+                    let model_total = mu.total_tokens();
                     let sub_cells = cols.build_row(
                         "",
                         &format!("  {}", display::display_model(&mu.model)),
-                        &display::infer_api_provider(raw),
+                        &display::infer_api_provider(mu.effective_raw_model()),
                         mu.input_tokens,
                         mu.output_tokens,
                         model_total,
@@ -127,29 +118,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         // Normal mode: flat list for the scope
         for mu in &app.detail_models {
-            let total = mu.input_tokens
-                + mu.output_tokens
-                + mu.cache_read_tokens
-                + mu.cache_creation_tokens
-                + mu.thinking_tokens;
+            let total = mu.total_tokens();
 
             // Columns depend on group-by mode.
             // Use raw_model for API provider inference (retains routing
             // prefix like "vertexai."), normalized model for display name.
-            let raw = if mu.raw_model.is_empty() {
-                &mu.model
-            } else {
-                &mu.raw_model
-            };
             let (name_col, api_col, client_col) = match app.group_by {
                 crate::tui::app::GroupBy::Model => (
                     display::display_model(&mu.model),
-                    display::infer_api_provider(raw),
+                    display::infer_api_provider(mu.effective_raw_model()),
                     String::new(),
                 ),
                 crate::tui::app::GroupBy::ModelClient => (
                     display::display_model(&mu.model),
-                    display::infer_api_provider(raw),
+                    display::infer_api_provider(mu.effective_raw_model()),
                     display::display_client(&mu.provider),
                 ),
                 crate::tui::app::GroupBy::Client => (

@@ -93,6 +93,29 @@ pub struct ModelUsage {
     pub request_count: u64,
 }
 
+impl ModelUsage {
+    /// Sum of all token fields.
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_creation_tokens
+            + self.thinking_tokens
+    }
+
+    /// The raw model name to use for API provider inference.
+    /// Falls back to the normalized `model` if `raw_model` is empty.
+    #[must_use]
+    pub fn effective_raw_model(&self) -> &str {
+        if self.raw_model.is_empty() {
+            &self.model
+        } else {
+            &self.raw_model
+        }
+    }
+}
+
 /// Summary for a time period (day, week, or month)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DailySummary {

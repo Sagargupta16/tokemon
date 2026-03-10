@@ -57,11 +57,7 @@ struct RowSnapshot {
 
 impl From<&ModelUsage> for RowSnapshot {
     fn from(mu: &ModelUsage) -> Self {
-        let total = mu.input_tokens
-            + mu.output_tokens
-            + mu.cache_read_tokens
-            + mu.cache_creation_tokens
-            + mu.thinking_tokens;
+        let total = mu.total_tokens();
         Self {
             total_tokens: total,
             // Compare costs at 4 decimal places to avoid float comparison issues

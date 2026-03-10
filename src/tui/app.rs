@@ -692,16 +692,8 @@ impl App {
             }
             SortOrder::TokensDesc => {
                 models.sort_by(|a, b| {
-                    let ta = a.input_tokens
-                        + a.output_tokens
-                        + a.cache_read_tokens
-                        + a.cache_creation_tokens
-                        + a.thinking_tokens;
-                    let tb = b.input_tokens
-                        + b.output_tokens
-                        + b.cache_read_tokens
-                        + b.cache_creation_tokens
-                        + b.thinking_tokens;
+                    let ta = a.total_tokens();
+                    let tb = b.total_tokens();
                     tb.cmp(&ta).then_with(|| a.model.cmp(&b.model))
                 });
             }
@@ -718,16 +710,7 @@ impl App {
         }
 
         self.detail_total_cost = models.iter().map(|m| m.cost_usd).sum();
-        self.detail_total_tokens = models
-            .iter()
-            .map(|m| {
-                m.input_tokens
-                    + m.output_tokens
-                    + m.cache_read_tokens
-                    + m.cache_creation_tokens
-                    + m.thinking_tokens
-            })
-            .sum();
+        self.detail_total_tokens = models.iter().map(|m| m.total_tokens()).sum();
         self.detail_models = models;
 
         // Historical summaries for the history view
