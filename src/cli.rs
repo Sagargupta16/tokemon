@@ -132,4 +132,14 @@ pub enum Commands {
     },
     /// Start MCP (Model Context Protocol) server over stdio
     Mcp,
+    /// Live monitoring dashboard
+    Top {
+        /// Initial view: today, week, or month
+        #[arg(long, default_value = "today")]
+        view: String,
+
+        /// Data refresh interval in seconds
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
 }

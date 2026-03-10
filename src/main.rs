@@ -15,6 +15,7 @@ mod render;
 mod rollup;
 mod source;
 mod timestamp;
+mod tui;
 mod types;
 
 use cache::Cache;
@@ -38,6 +39,7 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Sessions { top }) => cmd_sessions(&cli, &config, *top),
         Some(Commands::Prune { before }) => cmd_prune(*before),
         Some(Commands::Mcp) => mcp::run(&cli, &config),
+        Some(Commands::Top { view, interval }) => tui::run(&config, view, *interval),
     }
 }
 

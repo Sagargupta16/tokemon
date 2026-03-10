@@ -45,3 +45,10 @@ terminal_size = "0.4"
 
 # HTTP (for pricing data fetch)
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "native-tls-vendored"] }
+
+# TUI (tokemon top)
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+notify = "7"
+notify-debouncer-mini = "0.5"
