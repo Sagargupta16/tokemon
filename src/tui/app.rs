@@ -949,7 +949,27 @@ impl App {
     fn reload_from_cache(&mut self) -> bool {
         let records = load_records_from_cache(self.pricing.as_ref());
         self.cached_records = records;
+
+        // Snapshot cards before recomputing to detect card-only changes.
+        let prev_cards_tokens: Vec<u64> = self.cards.iter().map(|c| c.tokens).collect();
+        #[allow(clippy::cast_possible_truncation)]
+        let prev_cards_cost: Vec<i64> = self
+            .cards
+            .iter()
+            .map(|c| (c.cost * 10_000.0) as i64)
+            .collect();
+        let prev_sparklines: Vec<Vec<u64>> =
+            self.cards.iter().map(|c| c.sparkline.clone()).collect();
+
         self.recompute_cards();
+
+        // Check if any card data changed (cost, tokens, or sparkline).
+        #[allow(clippy::cast_possible_truncation)]
+        let cards_dirty = self.cards.iter().enumerate().any(|(i, c)| {
+            c.tokens != prev_cards_tokens[i]
+                || (c.cost * 10_000.0) as i64 != prev_cards_cost[i]
+                || c.sparkline != prev_sparklines[i]
+        });
 
         // Snapshot current models before recomputing for diff
         let prev = std::mem::take(&mut self.prev_models);
@@ -977,7 +997,7 @@ impl App {
         // Save current models for next diff
         self.prev_models = self.detail_models.clone();
 
-        has_changes
+        has_changes || cards_dirty
     }
 
     /// Returns `true` if any per-row highlights are still actively fading.
