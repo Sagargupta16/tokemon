@@ -379,19 +379,20 @@ fn parse_with_cache(
     since: Option<NaiveDate>,
     until: Option<NaiveDate>,
 ) -> anyhow::Result<Vec<types::Record>> {
-    let cache = Cache::open()
-        .map_err(|e| {
+    let mut cache = match Cache::open() {
+        Ok(c) => Some(c),
+        Err(e) => {
             eprintln!(
                 "[tokemon] Warning: cache unavailable ({}); parsing all files",
                 e
             );
-            e
-        })
-        .ok();
+            None
+        }
+    };
 
     let providers = resolve_source_refs(registry, filter)?;
 
-    let Some(cache) = cache else {
+    let Some(ref mut cache) = cache else {
         return parse_all_directly(&providers);
     };
 
@@ -413,7 +414,7 @@ fn parse_with_cache(
     let cached_mtimes = if force_reparse {
         std::collections::HashMap::new()
     } else {
-        cache.cached_file_mtimes()
+        cache.cached_file_mtimes().unwrap_or_default()
     };
 
     // Discover all files and collect their paths for preservation tracking
@@ -438,11 +439,12 @@ fn parse_with_cache(
         cache.mark_preserved(&discovered_files);
     }
 
-    // Find files that need (re)parsing
+    // Find files that need (re)parsing.
+    // Use WAL-aware mtime for .db files so we detect SQLite WAL writes.
     let files_to_parse: Vec<_> = all_discovered
         .into_iter()
         .filter_map(|(provider, file)| {
-            let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
+            let mtime = cache::file_mtime_secs_for_db(&file).unwrap_or(0);
             let file_key = file.display().to_string();
             if cached_mtimes.get(&file_key) == Some(&mtime) {
                 None
@@ -452,45 +454,50 @@ fn parse_with_cache(
         })
         .collect();
 
-    // Parse changed files in parallel, then insert into cache serially
+    // Parse changed files in parallel, then store in a single transaction
     if !files_to_parse.is_empty() {
         use rayon::prelude::*;
 
-        let results: Vec<_> = files_to_parse
+        // Parse in parallel
+        let parsed: Vec<_> = files_to_parse
             .par_iter()
-            .map(|(provider, file, mtime)| {
-                let parsed = provider.parse_file(file);
-                (file, *mtime, parsed)
-            })
-            .collect();
-
-        if let Err(e) = cache.begin() {
-            eprintln!("[tokemon] Warning: cache transaction failed: {}", e);
-        }
-
-        for (file, mtime, parsed) in &results {
-            match parsed {
-                Ok(entries) => {
-                    if let Err(e) = cache.store_file_entries(file, *mtime, entries) {
-                        eprintln!("[tokemon] Warning: cache write failed: {}", e);
-                    }
-                }
+            .filter_map(|(provider, file, mtime)| match provider.parse_file(file) {
+                Ok(entries) => Some((file.as_path(), *mtime, entries)),
                 Err(e) => {
                     eprintln!(
                         "[tokemon] Warning: failed to parse {}: {}",
                         file.display(),
                         e
                     );
+                    None
+                }
+            })
+            .collect();
+
+        // Write all parsed results in a single transaction
+        if !parsed.is_empty() {
+            match cache.write_entries(&parsed) {
+                Ok(n) => {
+                    if n == 0 {
+                        eprintln!("[tokemon] Warning: parsed files but wrote 0 entries to cache");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[tokemon] Warning: cache write failed: {}", e);
+                    // Fall through — we'll still load whatever is in the cache
                 }
             }
         }
-
-        if let Err(e) = cache.commit() {
-            eprintln!("[tokemon] Warning: cache commit failed: {}", e);
+    } else {
+        // No files changed, but update the discovery timestamp so we
+        // don't re-discover on the next invocation within the interval.
+        if let Err(e) = cache.set_last_discovery() {
+            eprintln!(
+                "[tokemon] Warning: failed to update discovery timestamp: {}",
+                e
+            );
         }
     }
-
-    cache.set_last_discovery();
 
     let mut entries = if has_filters {
         cache.load_entries_filtered(since, until, filter)?

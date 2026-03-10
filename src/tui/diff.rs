@@ -119,6 +119,7 @@ mod tests {
     fn make_usage(model: &str, provider: &str, tokens: u64, cost: f64) -> ModelUsage {
         ModelUsage {
             model: model.to_string(),
+            raw_model: model.to_string(),
             provider: provider.to_string(),
             input_tokens: tokens,
             output_tokens: 0,

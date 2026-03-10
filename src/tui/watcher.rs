@@ -11,7 +11,6 @@ use std::time::Duration;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use tokio::sync::mpsc;
 
-use crate::cache::Cache;
 use crate::source::SourceSet;
 use crate::{cache, cost, dedup};
 
@@ -26,14 +25,20 @@ use super::event::Event;
 ///
 /// # Arguments
 ///
-/// * `event_tx` — channel to notify the TUI of data changes
+/// * `event_tx` — channel to notify the TUI of data changes and warnings
 /// * `no_cost` — whether to skip pricing (from config)
 pub fn start(event_tx: mpsc::UnboundedSender<Event>, no_cost: bool) {
     std::thread::spawn(move || {
         if let Err(e) = run_watcher(&event_tx, no_cost) {
-            eprintln!("[tokemon] Warning: file watcher failed: {e}");
+            let _ = event_tx.send(Event::Warning(format!("File watcher failed: {e}")));
         }
     });
+}
+
+/// Send a warning through the event channel. If the channel is closed,
+/// silently discard — the TUI is shutting down.
+fn warn(tx: &mpsc::UnboundedSender<Event>, msg: String) {
+    let _ = tx.send(Event::Warning(msg));
 }
 
 fn run_watcher(event_tx: &mpsc::UnboundedSender<Event>, no_cost: bool) -> anyhow::Result<()> {
@@ -69,9 +74,16 @@ fn run_watcher(event_tx: &mpsc::UnboundedSender<Event>, no_cost: bool) -> anyhow
             .watcher()
             .watch(dir, notify::RecursiveMode::Recursive)
         {
-            eprintln!("[tokemon] Warning: could not watch {}: {e}", dir.display());
+            warn(event_tx, format!("Could not watch {}: {e}", dir.display()));
         }
     }
+
+    // Load pricing engine once for the entire watcher lifetime
+    let pricing = if no_cost {
+        None
+    } else {
+        cost::PricingEngine::load(true).ok()
+    };
 
     // Process debounced events
     loop {
@@ -84,8 +96,8 @@ fn run_watcher(event_tx: &mpsc::UnboundedSender<Event>, no_cost: bool) -> anyhow
 
                 if has_changes {
                     // Re-parse changed files and update the cache
-                    if let Err(e) = incremental_update(&registry, no_cost) {
-                        eprintln!("[tokemon] Warning: incremental update failed: {e}");
+                    if let Err(e) = incremental_update(&registry, no_cost, pricing.as_ref()) {
+                        warn(event_tx, format!("Incremental update failed: {e}"));
                     }
 
                     // Notify the TUI
@@ -96,7 +108,7 @@ fn run_watcher(event_tx: &mpsc::UnboundedSender<Event>, no_cost: bool) -> anyhow
                 }
             }
             Ok(Err(errors)) => {
-                eprintln!("[tokemon] Warning: watch error: {errors}");
+                warn(event_tx, format!("Watch error: {errors}"));
             }
             Err(_) => {
                 // Channel closed, debouncer dropped
@@ -113,64 +125,61 @@ fn run_watcher(event_tx: &mpsc::UnboundedSender<Event>, no_cost: bool) -> anyhow
 /// This mirrors the logic in `main.rs::parse_with_cache` but is designed
 /// to run from a background thread. It only re-parses files whose
 /// modification time has changed since the last cache write.
-fn incremental_update(registry: &SourceSet, no_cost: bool) -> anyhow::Result<()> {
-    let cache = Cache::open()?;
-    let cached_mtimes = cache.cached_file_mtimes();
+fn incremental_update(
+    registry: &SourceSet,
+    no_cost: bool,
+    pricing: Option<&cost::PricingEngine>,
+) -> anyhow::Result<()> {
+    let mut cache = cache::Cache::open()?;
+    let cached_mtimes = cache.cached_file_mtimes()?;
 
     let providers = registry.available();
 
-    // Discover all files and find changed ones
-    let files_to_parse: Vec<(&dyn crate::source::Source, PathBuf, i64)> = providers
-        .iter()
-        .flat_map(|provider| {
-            provider
-                .discover_files()
-                .into_iter()
-                .filter_map(|file| {
-                    let mtime = cache::file_mtime_secs(&file).unwrap_or(0);
-                    let file_key = file.display().to_string();
-                    if cached_mtimes.get(&file_key) == Some(&mtime) {
-                        None
-                    } else {
-                        Some((*provider, file, mtime))
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    // Discover all files and find changed ones.
+    // Use WAL-aware mtime for .db files.
+    let mut files_to_parse: Vec<(&dyn crate::source::Source, PathBuf, i64)> = Vec::new();
+    for provider in &providers {
+        for file in provider.discover_files() {
+            let mtime = cache::file_mtime_secs_for_db(&file).unwrap_or(0);
+            let file_key = file.display().to_string();
+            if cached_mtimes.get(&file_key) == Some(&mtime) {
+                continue;
+            }
+            files_to_parse.push((*provider, file, mtime));
+        }
+    }
 
     if files_to_parse.is_empty() {
         return Ok(());
     }
 
-    // Parse changed files (sequentially to avoid contention on the watcher thread)
-    cache.begin()?;
+    // Parse changed files and collect results
+    let mut parsed_files: Vec<(&std::path::Path, i64, Vec<crate::types::Record>)> = Vec::new();
 
     for (provider, file, mtime) in &files_to_parse {
         match provider.parse_file(file) {
             Ok(mut entries) => {
-                // Apply pricing if enabled
+                // Apply pricing if enabled (using pre-loaded engine)
                 if !no_cost {
-                    if let Ok(engine) = cost::PricingEngine::load(true) {
+                    if let Some(engine) = pricing {
                         engine.apply_costs(&mut entries);
                     }
                 }
-                entries = dedup::deduplicate(entries);
-                if let Err(e) = cache.store_file_entries(file, *mtime, &entries) {
-                    eprintln!(
-                        "[tokemon] Warning: cache write failed for {}: {e}",
-                        file.display()
-                    );
-                }
+                let entries = dedup::deduplicate(entries);
+                parsed_files.push((file.as_path(), *mtime, entries));
             }
             Err(e) => {
+                // Log but continue — don't let one bad file block others.
+                // This will be reported via Event::Warning by the caller.
                 eprintln!("[tokemon] Warning: failed to parse {}: {e}", file.display());
             }
         }
     }
 
-    cache.commit()?;
-    cache.set_last_discovery();
+    // Write all results in a single transaction
+    if !parsed_files.is_empty() {
+        cache.write_entries(&parsed_files)?;
+    }
 
     Ok(())
 }

@@ -75,7 +75,14 @@ impl Record {
 /// Aggregated usage for a single model within a time period
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
+    /// Normalized model name (provider prefixes and date suffixes stripped).
+    /// Used for display via `display_model()` and for aggregation keys.
     pub model: String,
+    /// First raw model name seen for this aggregation group.
+    /// Retains provider prefixes (e.g. `"vertexai.claude-opus-4-6"`) so
+    /// `infer_api_provider()` can still detect the routing layer.
+    #[serde(default)]
+    pub raw_model: String,
     pub provider: String,
     pub input_tokens: u64,
     pub output_tokens: u64,

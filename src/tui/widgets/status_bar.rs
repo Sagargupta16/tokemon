@@ -1,4 +1,5 @@
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
@@ -22,6 +23,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Show warning if one is active (overrides keybinding hints)
+    if let Some(warning) = app.active_warning() {
+        let warning_style = Style::default()
+            .fg(theme::YELLOW)
+            .bg(theme::SURFACE)
+            .add_modifier(Modifier::BOLD);
+        let line = Line::from(vec![
+            Span::styled("⚠ ", warning_style),
+            Span::styled(warning.to_string(), warning_style),
+        ]);
+        frame.render_widget(line, area);
+        return;
+    }
+
     let mut spans: Vec<Span> = Vec::new();
 
     // Show active filter if any
@@ -29,9 +44,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled("filter:", theme::status_key()));
         spans.push(Span::styled(
             format!("{} ", &app.applied_filter),
-            ratatui::style::Style::default()
-                .fg(theme::YELLOW)
-                .bg(theme::SURFACE),
+            Style::default().fg(theme::YELLOW).bg(theme::SURFACE),
         ));
         spans.push(Span::styled(" │ ", theme::status_bar()));
     }

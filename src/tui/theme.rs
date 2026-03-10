@@ -40,11 +40,8 @@ pub const RED: Color = Color::Rgb(235, 85, 85);
 /// Cyan for headers and labels.
 pub const CYAN: Color = Color::Rgb(85, 205, 220);
 
-/// New-row flash colour — blue fade-in for newly appearing rows.
-pub const FLASH_NEW: Color = Color::Rgb(60, 90, 180);
-
-/// Update-row flash colour — green flash for updated values.
-pub const FLASH_UPDATE: Color = Color::Rgb(50, 160, 90);
+/// Highlight colour for updated cell text — bright green that fades to normal.
+pub const HIGHLIGHT_GREEN: Color = Color::Rgb(80, 220, 110);
 
 // ── Composite styles ──────────────────────────────────────────────────────
 
@@ -178,4 +175,48 @@ pub fn total_row() -> Style {
         .fg(FG_BRIGHT)
         .bg(BG)
         .add_modifier(Modifier::BOLD)
+}
+
+/// Highlighted cell style for updated token/cost values.
+///
+/// `intensity` ranges from 1.0 (just updated) to 0.0 (fully faded).
+/// At full intensity: bright green text + bold.
+/// As it fades: text colour interpolates back to `normal_fg`.
+#[must_use]
+pub fn highlight_cell(intensity: f64, normal_fg: Color) -> Style {
+    if intensity <= 0.0 {
+        return Style::default().fg(normal_fg).bg(BG);
+    }
+
+    let fg = lerp_color(normal_fg, HIGHLIGHT_GREEN, intensity);
+    let mut style = Style::default().fg(fg).bg(BG);
+    // Bold for the first ~60% of the animation
+    if intensity > 0.4 {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+/// Linearly interpolate between two RGB colours.
+fn lerp_color(from: Color, to: Color, t: f64) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (from, to) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let r = (f64::from(r1) + (f64::from(r2) - f64::from(r1)) * t) as u8;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let g = (f64::from(g1) + (f64::from(g2) - f64::from(g1)) * t) as u8;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let b = (f64::from(b1) + (f64::from(b2) - f64::from(b1)) * t) as u8;
+            Color::Rgb(r, g, b)
+        }
+        // If not both RGB, just return target at high intensity, source otherwise
+        _ => {
+            if t > 0.5 {
+                to
+            } else {
+                from
+            }
+        }
+    }
 }

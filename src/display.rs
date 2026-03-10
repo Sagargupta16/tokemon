@@ -28,6 +28,35 @@ pub fn display_client(raw: &str) -> String {
     }
 }
 
+/// Normalize a raw model name to a canonical form for aggregation.
+///
+/// Strips provider routing prefixes (`vertexai.`, `openai/`, `bedrock/`, etc.),
+/// `@deployment` suffixes, and date suffixes (`-YYYYMMDD`).
+/// Keeps the `claude-` prefix so that model identity is preserved.
+///
+/// This ensures the same model used via different sources (e.g., Claude Code
+/// vs OpenCode via Vertex AI) aggregates into a single row.
+///
+/// ```text
+/// "vertexai.claude-opus-4-6@default" -> "claude-opus-4-6"
+/// "claude-opus-4-6"                  -> "claude-opus-4-6"
+/// "openai/gpt-4o"                    -> "gpt-4o"
+/// "bedrock/anthropic.claude-sonnet-4-20250514" -> "claude-sonnet-4"
+/// ```
+#[must_use]
+pub fn normalize_model(raw: &str) -> String {
+    // Strip @... deployment suffix
+    let raw = raw.split('@').next().unwrap_or(raw);
+    // Strip slash-based prefixes (e.g., "bedrock/", "openai/")
+    let after_slash = raw.split('/').next_back().unwrap_or(raw);
+    // Strip dot-based prefixes (e.g., "vertexai.", "anthropic.")
+    let s = after_slash
+        .strip_prefix("vertexai.")
+        .or_else(|| after_slash.strip_prefix("anthropic."))
+        .unwrap_or(after_slash);
+    strip_date_suffix(s).to_string()
+}
+
 /// Normalize a raw model name for display.
 /// Strips provider prefixes (vertexai., openai/, anthropic/, etc.),
 /// the `claude-` prefix, and date suffixes (-YYYYMMDD).
@@ -173,6 +202,42 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_model() {
+        // Same model from different sources should normalize identically
+        assert_eq!(
+            normalize_model("vertexai.claude-opus-4-6@default"),
+            "claude-opus-4-6"
+        );
+        assert_eq!(normalize_model("claude-opus-4-6"), "claude-opus-4-6");
+        assert_eq!(
+            normalize_model("claude-opus-4-6@default"),
+            "claude-opus-4-6"
+        );
+        // Date suffixes stripped
+        assert_eq!(
+            normalize_model("claude-opus-4-1-20250805"),
+            "claude-opus-4-1"
+        );
+        // Non-Claude models
+        assert_eq!(normalize_model("openai/gpt-4o"), "gpt-4o");
+        assert_eq!(
+            normalize_model("vertexai.gemini-2.5-flash"),
+            "gemini-2.5-flash"
+        );
+        // Bedrock double prefix
+        assert_eq!(
+            normalize_model("bedrock/anthropic.claude-sonnet-4-20250514"),
+            "claude-sonnet-4"
+        );
+        // Models without any prefix pass through
+        assert_eq!(
+            normalize_model("trinity-large-preview-free"),
+            "trinity-large-preview-free"
+        );
+        assert_eq!(normalize_model("big-pickle"), "big-pickle");
+    }
+
+    #[test]
     fn test_display_model() {
         assert_eq!(display_model("claude-opus-4-1-20250805"), "opus-4-1");
         assert_eq!(display_model("claude-sonnet-4-20250514"), "sonnet-4");
@@ -219,5 +284,55 @@ mod tests {
         assert_eq!(infer_api_provider("unknown-model"), "");
         // Vertex AI detection via model prefix (Claude Code msg_vrtx_ detection)
         assert_eq!(infer_api_provider("vertexai.claude-opus-4-6"), "Vertex AI");
+    }
+
+    /// When GroupBy::Model merges rows across clients, `raw_model` is set to
+    /// the normalized name. Verify that `infer_api_provider` on a normalized
+    /// name returns the model's native vendor, not a routing layer.
+    #[test]
+    fn test_normalized_model_infers_native_provider() {
+        // All routing variants of the same Claude model
+        let variants = [
+            "vertexai.claude-opus-4-6@default",
+            "claude-opus-4-6",
+            "anthropic/claude-opus-4-6",
+            "bedrock/anthropic.claude-opus-4-6",
+        ];
+        for raw in &variants {
+            let norm = normalize_model(raw);
+            assert_eq!(norm, "claude-opus-4-6", "normalize_model({raw})");
+            assert_eq!(
+                infer_api_provider(&norm),
+                "Anthropic",
+                "infer_api_provider(normalize_model({raw}))"
+            );
+        }
+
+        // Non-Claude models
+        let gpt_variants = ["openai/gpt-4o", "gpt-4o"];
+        for raw in &gpt_variants {
+            let norm = normalize_model(raw);
+            assert_eq!(norm, "gpt-4o", "normalize_model({raw})");
+            assert_eq!(
+                infer_api_provider(&norm),
+                "OpenAI",
+                "infer_api_provider(normalize_model({raw}))"
+            );
+        }
+
+        let gemini_variants = [
+            "vertexai.gemini-2.5-flash",
+            "google/gemini-2.5-flash",
+            "gemini-2.5-flash",
+        ];
+        for raw in &gemini_variants {
+            let norm = normalize_model(raw);
+            assert_eq!(norm, "gemini-2.5-flash", "normalize_model({raw})");
+            assert_eq!(
+                infer_api_provider(&norm),
+                "Google",
+                "infer_api_provider(normalize_model({raw}))"
+            );
+        }
     }
 }

@@ -16,9 +16,11 @@ pub enum Event {
     Tick,
     /// Render — time to redraw the UI.
     Render,
-    /// The file watcher detected changes and updated the cache (Phase 2).
-    #[allow(dead_code)]
+    /// The file watcher detected changes and updated the cache.
     DataChanged,
+    /// A warning from the background watcher or data loading.
+    /// Displayed briefly in the status bar instead of printing to stderr.
+    Warning(String),
 }
 
 /// Drives the event loop, forwarding crossterm events and emitting periodic

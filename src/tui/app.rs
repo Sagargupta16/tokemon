@@ -1,13 +1,23 @@
+use std::collections::HashMap;
+use std::time::Instant;
+
 use chrono::{Datelike, NaiveDate, Timelike, Utc};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::Config;
 use crate::render::format_tokens_short;
+use crate::source::SourceSet;
 use crate::types::{DailySummary, ModelUsage, Record};
-use crate::{cost, rollup};
+use crate::{cache, cost, dedup, rollup};
 
-use super::diff::{self, RowChange};
+use super::diff::{self, RowKey};
 use super::event::Event;
+
+/// Duration (in seconds) for the per-cell highlight fade animation.
+const HIGHLIGHT_DURATION_SECS: f64 = 1.5;
+
+/// Duration (in seconds) for warnings to remain visible in the status bar.
+const WARNING_DISPLAY_SECS: f64 = 5.0;
 
 // ── View scope ────────────────────────────────────────────────────────────
 
@@ -185,16 +195,28 @@ pub struct App {
     pub applied_filter: String,
     /// Current sort order.
     pub sort_order: SortOrder,
-    /// Recent row changes detected by the diff engine (for animations).
-    pub recent_changes: Vec<RowChange>,
-    /// Set to `true` when the scope changes (for view-switch animation).
-    pub view_switched: bool,
-    /// Config reference.
-    config: Config,
+    /// Per-row highlight timestamps: maps a `RowKey` to the instant
+    /// it was last updated. Used for the green fade animation on
+    /// individual table cells.
+    pub highlight_map: HashMap<RowKey, Instant>,
+    /// Last warning message from the background watcher or data loading,
+    /// with the instant it was received. Displayed in the status bar
+    /// for a few seconds then cleared.
+    pub last_warning: Option<(String, Instant)>,
+    /// Cached pricing engine (loaded once at startup, reused for all reads).
+    pricing: Option<cost::PricingEngine>,
+    /// Source registry (created once, reused for tick-based polling).
+    registry: SourceSet,
+    /// Whether to skip cost calculation.
+    no_cost: bool,
     /// Cached raw records for the current data load.
     cached_records: Vec<Record>,
     /// Previous model snapshot for diffing.
     prev_models: Vec<ModelUsage>,
+    /// Whether the initial data load is complete. The first load
+    /// populates `prev_models` but does NOT trigger highlights,
+    /// preventing the "everything flashes" effect on startup.
+    initial_load_done: bool,
 }
 
 impl App {
@@ -238,13 +260,22 @@ impl App {
             filter_text: String::new(),
             applied_filter: String::new(),
             sort_order: SortOrder::CostDesc,
-            recent_changes: Vec::new(),
-            view_switched: false,
-            config: config.clone(),
+            highlight_map: HashMap::new(),
+            last_warning: None,
+            pricing: None,
+            registry: SourceSet::new(),
+            no_cost: config.no_cost,
             cached_records: Vec::new(),
             prev_models: Vec::new(),
+            initial_load_done: false,
         };
-        app.refresh_data();
+        // Load pricing engine once (offline to avoid blocking).
+        if !config.no_cost {
+            app.pricing = cost::PricingEngine::load(true).ok();
+        }
+        // Initial data load: sync sources then read cache.
+        app.poll_sources();
+        app.reload_from_cache();
         app
     }
 
@@ -252,12 +283,45 @@ impl App {
     pub fn handle_event(&mut self, event: &Event) -> bool {
         match event {
             Event::Key(key) => self.handle_key(*key),
-            Event::Tick | Event::DataChanged => {
-                self.refresh_data();
+            Event::Tick => {
+                // Poll source files for changes (lightweight mtime checks),
+                // re-parse any that changed, and update the cache.
+                // The watcher thread also does this on file events, but
+                // tick-based polling catches changes that `notify` may miss
+                // (e.g. SQLite WAL writes on some platforms).
+                self.poll_sources();
+                self.reload_from_cache();
+                // Expire old warnings
+                if let Some((_, t)) = &self.last_warning {
+                    if t.elapsed().as_secs_f64() >= WARNING_DISPLAY_SECS {
+                        self.last_warning = None;
+                    }
+                }
+                true
+            }
+            Event::DataChanged => {
+                // The watcher already wrote to the cache — just re-read it.
+                self.reload_from_cache();
+                true
+            }
+            Event::Warning(msg) => {
+                self.last_warning = Some((msg.clone(), Instant::now()));
                 true
             }
             Event::Resize(_, _) | Event::Render => true,
         }
+    }
+
+    /// Returns the current warning message if it's still fresh (< 5 seconds old).
+    #[must_use]
+    pub fn active_warning(&self) -> Option<&str> {
+        self.last_warning.as_ref().and_then(|(msg, t)| {
+            if t.elapsed().as_secs_f64() < WARNING_DISPLAY_SECS {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        })
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -296,21 +360,18 @@ impl App {
             KeyCode::Char('t') => {
                 self.scope = Scope::Today;
                 self.scroll_offset = 0;
-                self.view_switched = true;
                 self.recompute_detail();
                 true
             }
             KeyCode::Char('w') => {
                 self.scope = Scope::Week;
                 self.scroll_offset = 0;
-                self.view_switched = true;
                 self.recompute_detail();
                 true
             }
             KeyCode::Char('m') => {
                 self.scope = Scope::Month;
                 self.scroll_offset = 0;
-                self.view_switched = true;
                 self.recompute_detail();
                 true
             }
@@ -345,7 +406,6 @@ impl App {
                 if new_scope != self.scope {
                     self.scope = new_scope;
                     self.scroll_offset = 0;
-                    self.view_switched = true;
                     self.recompute_detail();
                 }
                 true
@@ -358,7 +418,6 @@ impl App {
                 if new_scope != self.scope {
                     self.scope = new_scope;
                     self.scroll_offset = 0;
-                    self.view_switched = true;
                     self.recompute_detail();
                 }
                 true
@@ -393,19 +452,63 @@ impl App {
         }
     }
 
-    /// Reload all data from the cache and recompute everything.
+    /// Poll source files for mtime changes, re-parse any that changed,
+    /// and write the results to the cache in a single transaction.
     ///
-    /// This first runs an incremental update to re-parse any source files
-    /// whose mtime has changed, then reads the updated cache.
-    pub fn refresh_data(&mut self) {
-        // Re-parse changed source files and update the cache in-place.
-        // This ensures we always have fresh data, even if the background
-        // watcher thread failed to start.
-        sync_cache_from_sources(self.config.no_cost);
+    /// This is the primary mechanism for detecting live data updates.
+    /// It checks file modification times (including SQLite WAL siblings)
+    /// against the mtimes stored in the cache. Only files with newer
+    /// mtimes are re-parsed, so the cost is negligible when nothing changed.
+    fn poll_sources(&self) {
+        let Ok(mut cache) = cache::Cache::open() else {
+            return;
+        };
+        let cached_mtimes = cache.cached_file_mtimes().unwrap_or_default();
+        let providers = self.registry.available();
 
-        // Load records from cache. We do a full load (no date filter)
-        // so we can compute all three card summaries.
-        let records = load_records_from_cache(&self.config);
+        // Collect parsed results with owned PathBufs.
+        let mut parsed: Vec<(std::path::PathBuf, i64, Vec<crate::types::Record>)> = Vec::new();
+
+        for provider in &providers {
+            for file in provider.discover_files() {
+                let mtime = cache::file_mtime_secs_for_db(&file).unwrap_or(0);
+                let file_key = file.display().to_string();
+                if cached_mtimes.get(&file_key) == Some(&mtime) {
+                    continue;
+                }
+                if let Ok(mut entries) = provider.parse_file(&file) {
+                    if !self.no_cost {
+                        if let Some(engine) = self.pricing.as_ref() {
+                            engine.apply_costs(&mut entries);
+                        }
+                    }
+                    let entries = dedup::deduplicate(entries);
+                    parsed.push((file, mtime, entries));
+                }
+            }
+        }
+
+        if parsed.is_empty() {
+            return;
+        }
+
+        // write_entries takes &[(&Path, i64, Vec<Record>)].
+        // We own PathBufs in `parsed` — build refs that borrow from them.
+        let refs: Vec<(&std::path::Path, i64, Vec<crate::types::Record>)> = parsed
+            .iter_mut()
+            .map(|(p, m, e)| (p.as_path(), *m, std::mem::take(e)))
+            .collect();
+
+        let _ = cache.write_entries(&refs);
+    }
+
+    /// Re-read the cache and recompute all derived state.
+    ///
+    /// This is lightweight — it only queries SQLite and recomputes
+    /// in-memory aggregations. File discovery and parsing are handled
+    /// by the background watcher thread.
+    fn reload_from_cache(&mut self) {
+        let records = load_records_from_cache(self.pricing.as_ref());
         self.cached_records = records;
         self.recompute_cards();
 
@@ -413,11 +516,47 @@ impl App {
         let prev = std::mem::take(&mut self.prev_models);
         self.recompute_detail();
 
+        // On first load, just seed prev_models — no highlights.
+        if !self.initial_load_done {
+            self.initial_load_done = true;
+            self.prev_models = self.detail_models.clone();
+            return;
+        }
+
         // Compute diff against previous state
-        self.recent_changes = diff::diff(&prev, &self.detail_models);
+        let changes = diff::diff(&prev, &self.detail_models);
+        let now = Instant::now();
+        for change in &changes {
+            self.highlight_map.insert(change.key.clone(), now);
+        }
+
+        // Expire old highlights
+        self.highlight_map
+            .retain(|_, t| t.elapsed().as_secs_f64() < HIGHLIGHT_DURATION_SECS);
 
         // Save current models for next diff
         self.prev_models = self.detail_models.clone();
+    }
+
+    /// Returns `true` if any per-row highlights are still fading.
+    /// Used by the main loop to keep redrawing during animations.
+    #[must_use]
+    pub fn has_active_highlights(&self) -> bool {
+        !self.highlight_map.is_empty()
+    }
+
+    /// Return the highlight intensity (0.0–1.0) for a given row key.
+    /// Returns 0.0 if the row has no active highlight.
+    #[must_use]
+    pub fn highlight_intensity(&self, key: &RowKey) -> f64 {
+        self.highlight_map.get(key).map_or(0.0, |t| {
+            let elapsed = t.elapsed().as_secs_f64();
+            if elapsed >= HIGHLIGHT_DURATION_SECS {
+                0.0
+            } else {
+                1.0 - (elapsed / HIGHLIGHT_DURATION_SECS)
+            }
+        })
     }
 
     fn recompute_cards(&mut self) {
@@ -495,16 +634,24 @@ impl App {
                 let entry = model_map.entry(key).or_insert_with(|| match self.group_by {
                     GroupBy::Model => ModelUsage {
                         model: mu.model.clone(),
+                        // Use the normalized name (not the first-seen raw
+                        // name) so that `infer_api_provider` returns the
+                        // model's native vendor (e.g. "Anthropic") rather
+                        // than a random routing layer from whichever client
+                        // happened to be inserted first.
+                        raw_model: mu.model.clone(),
                         provider: String::new(),
                         ..Default::default()
                     },
                     GroupBy::ModelClient => ModelUsage {
                         model: mu.model.clone(),
+                        raw_model: mu.raw_model.clone(),
                         provider: mu.provider.clone(),
                         ..Default::default()
                     },
                     GroupBy::Client => ModelUsage {
                         model: String::new(),
+                        raw_model: String::new(),
                         provider: mu.provider.clone(),
                         ..Default::default()
                     },
@@ -597,74 +744,21 @@ impl App {
 
 // ── Data loading ──────────────────────────────────────────────────────────
 
-/// Re-parse source files that have changed since the last cache write.
-///
-/// This runs the same incremental update logic as the watcher thread,
-/// ensuring the `SQLite` cache is up-to-date before we read from it.
-fn sync_cache_from_sources(no_cost: bool) {
-    use crate::cache::Cache;
-    use crate::dedup;
-    use crate::source::SourceSet;
-
-    let Ok(cache) = Cache::open() else { return };
-    let registry = SourceSet::new();
-    let cached_mtimes = cache.cached_file_mtimes();
-    let providers = registry.available();
-
-    let mut any_changes = false;
-
-    for provider in &providers {
-        for file in provider.discover_files() {
-            let mtime = crate::cache::file_mtime_secs(&file).unwrap_or(0);
-            let file_key = file.display().to_string();
-            if cached_mtimes.get(&file_key) == Some(&mtime) {
-                continue;
-            }
-            // First changed file — start a transaction
-            if !any_changes {
-                if cache.begin().is_err() {
-                    return;
-                }
-                any_changes = true;
-            }
-            if let Ok(mut entries) = provider.parse_file(&file) {
-                if !no_cost {
-                    if let Ok(engine) = cost::PricingEngine::load(true) {
-                        engine.apply_costs(&mut entries);
-                    }
-                }
-                entries = dedup::deduplicate(entries);
-                let _ = cache.store_file_entries(&file, mtime, &entries);
-            }
-        }
-    }
-
-    if any_changes {
-        let _ = cache.commit();
-        cache.set_last_discovery();
-    }
-}
-
-fn load_records_from_cache(config: &Config) -> Vec<Record> {
-    use crate::cache::Cache;
-
-    let Ok(cache) = Cache::open() else {
+fn load_records_from_cache(pricing: Option<&cost::PricingEngine>) -> Vec<Record> {
+    let Ok(c) = cache::Cache::open() else {
         return Vec::new();
     };
 
     // Load everything — the TUI filters in memory for card summaries.
-    // We load the last 30 days to keep things bounded.
+    // We load the last ~60 days to keep things bounded.
     let since = Scope::Month.since() - chrono::Duration::days(30);
-    let mut entries = cache
+    let mut entries = c
         .load_entries_filtered(Some(since), None, &[])
         .unwrap_or_default();
 
-    // Apply pricing
-    if !config.no_cost {
-        // Use offline pricing to avoid blocking the UI with HTTP requests
-        if let Ok(engine) = cost::PricingEngine::load(true) {
-            engine.apply_costs(&mut entries);
-        }
+    // Apply pricing from pre-loaded engine (no disk I/O here).
+    if let Some(engine) = pricing {
+        engine.apply_costs(&mut entries);
     }
 
     entries.sort_by_key(|e| e.timestamp);

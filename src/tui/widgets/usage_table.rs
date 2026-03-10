@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
@@ -7,6 +7,7 @@ use ratatui::Frame;
 use crate::display;
 use crate::render::format_tokens_short;
 use crate::tui::app::App;
+use crate::tui::diff::RowKey;
 use crate::tui::theme;
 
 /// Render the main usage detail table.
@@ -90,6 +91,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 summary.total_cost,
                 style,
                 is_current,
+                0.0, // no per-cell highlight in history mode
             );
             rows.push(Row::new(period_cells).height(1));
 
@@ -101,16 +103,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                         + mu.cache_read_tokens
                         + mu.cache_creation_tokens
                         + mu.thinking_tokens;
+                    let raw = if mu.raw_model.is_empty() {
+                        &mu.model
+                    } else {
+                        &mu.raw_model
+                    };
                     let sub_cells = cols.build_row(
                         "",
                         &format!("  {}", display::display_model(&mu.model)),
-                        &display::infer_api_provider(&mu.model),
+                        &display::infer_api_provider(raw),
                         mu.input_tokens,
                         mu.output_tokens,
                         model_total,
                         mu.cost_usd,
                         style,
                         is_current,
+                        0.0, // no per-cell highlight in history mode
                     );
                     rows.push(Row::new(sub_cells).height(1));
                 }
@@ -125,16 +133,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 + mu.cache_creation_tokens
                 + mu.thinking_tokens;
 
-            // Columns depend on group-by mode
+            // Columns depend on group-by mode.
+            // Use raw_model for API provider inference (retains routing
+            // prefix like "vertexai."), normalized model for display name.
+            let raw = if mu.raw_model.is_empty() {
+                &mu.model
+            } else {
+                &mu.raw_model
+            };
             let (name_col, api_col, client_col) = match app.group_by {
                 crate::tui::app::GroupBy::Model => (
                     display::display_model(&mu.model),
-                    display::infer_api_provider(&mu.model),
+                    display::infer_api_provider(raw),
                     String::new(),
                 ),
                 crate::tui::app::GroupBy::ModelClient => (
                     display::display_model(&mu.model),
-                    display::infer_api_provider(&mu.model),
+                    display::infer_api_provider(raw),
                     display::display_client(&mu.provider),
                 ),
                 crate::tui::app::GroupBy::Client => (
@@ -143,6 +158,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     String::new(),
                 ),
             };
+
+            // Look up per-row highlight intensity
+            let row_key = RowKey::from(mu);
+            let intensity = app.highlight_intensity(&row_key);
 
             let cells = cols.build_row(
                 &name_col,
@@ -154,6 +173,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 mu.cost_usd,
                 theme::text(),
                 true,
+                intensity,
             );
             rows.push(Row::new(cells).height(1));
         }
@@ -239,60 +259,66 @@ impl ColumnSet {
         output: u64,
         total: u64,
         cost: f64,
-        base_style: ratatui::style::Style,
+        base_style: Style,
         use_color: bool,
+        highlight_intensity: f64,
     ) -> Vec<Cell<'static>> {
         let mut cells: Vec<Cell> = Vec::new();
 
-        // In history mode, col0=date/label, col1=model, col2=api.
-        // In normal mode, col0=model, col1=api, col2=client.
-        // The caller sets these appropriately.
-        if !col1.is_empty() || col0.is_empty() {
-            // History mode row: col0 is label
-            cells.push(Cell::from(Span::styled(col0.to_string(), base_style)));
+        // Name / label columns — apply bold when highlighted, but not green
+        let name_style = if highlight_intensity > 0.4 {
+            base_style.add_modifier(Modifier::BOLD)
         } else {
-            cells.push(Cell::from(Span::styled(col0.to_string(), base_style)));
-        }
+            base_style
+        };
+
+        cells.push(Cell::from(Span::styled(col0.to_string(), name_style)));
 
         if self.show_api {
-            cells.push(Cell::from(Span::styled(col1.to_string(), base_style)));
+            cells.push(Cell::from(Span::styled(col1.to_string(), name_style)));
         }
         if self.show_client {
-            cells.push(Cell::from(Span::styled(col2.to_string(), base_style)));
+            cells.push(Cell::from(Span::styled(col2.to_string(), name_style)));
         }
+
+        // Token and cost columns get the green highlight effect
         if self.show_input {
             let s = format_tokens_short(input);
-            let style = if use_color {
+            let normal_style = if use_color {
                 theme::tokens_style(input)
             } else {
                 base_style
             };
+            let style = apply_highlight(normal_style, highlight_intensity);
             cells.push(Cell::from(Span::styled(s, style)));
         }
         if self.show_output {
             let s = format_tokens_short(output);
-            let style = if use_color {
+            let normal_style = if use_color {
                 theme::tokens_style(output)
             } else {
                 base_style
             };
+            let style = apply_highlight(normal_style, highlight_intensity);
             cells.push(Cell::from(Span::styled(s, style)));
         }
 
         let total_s = format_tokens_short(total);
-        let total_style = if use_color {
+        let normal_total = if use_color {
             theme::tokens_style(total)
         } else {
             base_style
         };
+        let total_style = apply_highlight(normal_total, highlight_intensity);
         cells.push(Cell::from(Span::styled(total_s, total_style)));
 
         let cost_s = format_cost(cost);
-        let cost_style = if use_color {
+        let normal_cost = if use_color {
             theme::cost_style(cost)
         } else {
             base_style
         };
+        let cost_style = apply_highlight(normal_cost, highlight_intensity);
         cells.push(Cell::from(Span::styled(cost_s, cost_style)));
 
         cells
@@ -366,4 +392,15 @@ fn format_cost(cost: f64) -> String {
     } else {
         format!("${rounded:.2}")
     }
+}
+
+/// Apply the green highlight effect to a cell style based on intensity.
+/// Returns the original style if intensity is 0.
+fn apply_highlight(normal: Style, intensity: f64) -> Style {
+    if intensity <= 0.0 {
+        return normal;
+    }
+    // Extract the foreground colour from the normal style, defaulting to FG
+    let normal_fg = normal.fg.unwrap_or(theme::FG);
+    theme::highlight_cell(intensity, normal_fg)
 }

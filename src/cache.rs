@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, types::Value, Connection, Row};
@@ -23,15 +23,36 @@ impl Cache {
             fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&db_path)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             PRAGMA cache_size=-10000;
-             PRAGMA temp_store=MEMORY;
-             PRAGMA mmap_size=268435456;",
-        )?;
+
+        // Set busy timeout FIRST — before any other operation that could
+        // encounter a lock held by another process (e.g. the watcher thread).
+        conn.busy_timeout(Duration::from_secs(5))?;
+
+        // Configure PRAGMAs individually so each one is fully processed.
+        // PRAGMA journal_mode returns a result row — use pragma_update
+        // which handles this correctly in rusqlite.
+        conn.pragma_update(None, "journal_mode", "wal")?;
+        conn.pragma_update(None, "synchronous", "normal")?;
+        conn.pragma_update(None, "cache_size", -10_000_i32)?;
+        conn.pragma_update(None, "temp_store", "memory")?;
+        conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
+
+        // Verify WAL mode actually took effect
+        let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if mode != "wal" {
+            eprintln!(
+                "[tokemon] Warning: requested WAL journal mode but got '{}'; \
+                 writes may be slower",
+                mode
+            );
+        }
+
         let cache = Self { conn };
         cache.init_schema()?;
+
+        // Verify writes actually work — a canary test.
+        cache.verify_writable()?;
+
         Ok(cache)
     }
 
@@ -40,7 +61,9 @@ impl Cache {
     }
 
     fn init_schema(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch(
+        // Create tables with individual statements so failures are isolated
+        // and provide clear error messages.
+        self.conn.execute(
             "CREATE TABLE IF NOT EXISTS usage_entries (
                 id INTEGER PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -58,14 +81,30 @@ impl Cache {
                 request_id TEXT,
                 session_id TEXT,
                 dedup_key TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_entries(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime);
-            CREATE INDEX IF NOT EXISTS idx_provider_timestamp ON usage_entries(provider, timestamp);
-            CREATE TABLE IF NOT EXISTS cache_meta (
+            )",
+            [],
+        )?;
+
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS cache_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );",
+            )",
+            [],
+        )?;
+
+        // Indexes — each individually so we get a clear error if one fails.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_entries(timestamp)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_file ON usage_entries(source_file, source_mtime)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_timestamp ON usage_entries(provider, timestamp)",
+            [],
         )?;
 
         // Migration: add preserved column if missing
@@ -78,47 +117,55 @@ impl Cache {
             .unwrap_or(0)
             > 0;
         if !has_preserved {
-            self.conn.execute_batch(
-                "ALTER TABLE usage_entries ADD COLUMN preserved INTEGER NOT NULL DEFAULT 0;",
+            self.conn.execute(
+                "ALTER TABLE usage_entries ADD COLUMN preserved INTEGER NOT NULL DEFAULT 0",
+                [],
             )?;
         }
 
-        // Index on preserved — must be after the migration that adds the column
-        self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_preserved_timestamp ON usage_entries(preserved, timestamp);",
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_preserved_timestamp ON usage_entries(preserved, timestamp)",
+            [],
         )?;
 
         Ok(())
     }
 
-    pub fn begin(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch("BEGIN")?;
-        Ok(())
-    }
-
-    pub fn commit(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch("COMMIT")?;
+    /// Verify the database is actually writable by doing a round-trip
+    /// write/read/delete to `cache_meta`.
+    fn verify_writable(&self) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('_write_test', '1')",
+            [],
+        )?;
+        let val: String = self.conn.query_row(
+            "SELECT value FROM cache_meta WHERE key = '_write_test'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            val == "1",
+            "cache write verification failed: read back '{val}'"
+        );
+        self.conn
+            .execute("DELETE FROM cache_meta WHERE key = '_write_test'", [])?;
         Ok(())
     }
 
     /// Get all cached (file, mtime) pairs in one query for bulk staleness checking.
-    pub fn cached_file_mtimes(&self) -> std::collections::HashMap<String, i64> {
+    pub fn cached_file_mtimes(&self) -> anyhow::Result<std::collections::HashMap<String, i64>> {
         let mut map = std::collections::HashMap::new();
-        let Ok(mut stmt) = self
+        let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT source_file, source_mtime FROM usage_entries")
-        else {
-            return map;
-        };
-        let Ok(rows) = stmt.query_map([], |row| {
+            .prepare("SELECT DISTINCT source_file, source_mtime FROM usage_entries")?;
+        let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        }) else {
-            return map;
-        };
-        for row in rows.flatten() {
-            map.insert(row.0, row.1);
+        })?;
+        for row in rows {
+            let (file, mtime) = row?;
+            map.insert(file, mtime);
         }
-        map
+        Ok(map)
     }
 
     const ENTRY_COLUMNS: &str = "provider, timestamp, model, input_tokens, output_tokens, \
@@ -189,6 +236,10 @@ impl Cache {
     }
 
     /// Remove stale entries for a file and store new ones.
+    ///
+    /// Used by `write_entries` (via the `Transaction` API) and directly
+    /// in tests. Production code should prefer `write_entries`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn store_file_entries(
         &self,
         path: &Path,
@@ -234,6 +285,73 @@ impl Cache {
         Ok(())
     }
 
+    /// Write entries for multiple files in a single transaction.
+    ///
+    /// Uses rusqlite's `Transaction` API which guarantees commit-or-rollback
+    /// semantics. On success, also updates the discovery timestamp.
+    ///
+    /// Returns the total number of entries written.
+    pub fn write_entries(&mut self, files: &[(&Path, i64, Vec<Record>)]) -> anyhow::Result<usize> {
+        if files.is_empty() {
+            return Ok(0);
+        }
+
+        let tx = self.conn.transaction()?;
+        let mut total = 0;
+
+        for (path, mtime, entries) in files {
+            let path_str = path.display().to_string();
+
+            tx.execute(
+                "DELETE FROM usage_entries WHERE source_file = ?1",
+                params![path_str],
+            )?;
+
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO usage_entries (
+                    provider, source_file, source_mtime, timestamp, model,
+                    input_tokens, output_tokens, cache_read_tokens,
+                    cache_creation_tokens, thinking_tokens, cost_usd,
+                    message_id, request_id, session_id, dedup_key
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            )?;
+
+            for entry in entries {
+                stmt.execute(params![
+                    &*entry.provider,
+                    path_str,
+                    *mtime,
+                    entry.timestamp.to_rfc3339(),
+                    entry.model,
+                    entry.input_tokens,
+                    entry.output_tokens,
+                    entry.cache_read_tokens,
+                    entry.cache_creation_tokens,
+                    entry.thinking_tokens,
+                    entry.cost_usd,
+                    entry.message_id,
+                    entry.request_id,
+                    entry.session_id,
+                    entry.dedup_key(),
+                ])?;
+                total += 1;
+            }
+        }
+
+        // Update discovery timestamp inside the same transaction
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        tx.execute(
+            "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('last_discovery_at', ?1)",
+            params![now.to_string()],
+        )?;
+
+        tx.commit()?;
+        Ok(total)
+    }
+
     /// Check whether file discovery should be skipped because
     /// the cache was populated recently (within `max_age_secs`).
     #[must_use]
@@ -262,15 +380,16 @@ impl Cache {
     }
 
     /// Record the current time as the last discovery timestamp.
-    pub fn set_last_discovery(&self) {
+    pub fn set_last_discovery(&self) -> anyhow::Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let _ = self.conn.execute(
+        self.conn.execute(
             "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('last_discovery_at', ?1)",
             params![now.to_string()],
-        );
+        )?;
+        Ok(())
     }
 
     /// Mark entries as preserved when their source files no longer exist on disk.
@@ -298,7 +417,10 @@ impl Cache {
                     "UPDATE usage_entries SET preserved = 1 WHERE source_file = ?1 AND preserved = 0",
                     params![file],
                 ) {
-                    eprintln!("[tokemon] Warning: failed to preserve entries for {}: {}", file, e);
+                    eprintln!(
+                        "[tokemon] Warning: failed to preserve entries for {}: {}",
+                        file, e
+                    );
                 }
             }
         }
@@ -351,6 +473,28 @@ pub fn file_mtime_secs(path: &Path) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
 }
 
+/// Get file modification time, with SQLite WAL awareness.
+///
+/// For `.db` files, returns the maximum mtime across the main file
+/// and its `-wal` and `-shm` siblings. This is necessary because
+/// SQLite in WAL mode writes to the `-wal` file first; the main
+/// `.db` file's mtime may not update until a checkpoint occurs.
+pub fn file_mtime_secs_for_db(path: &Path) -> Option<i64> {
+    let base = file_mtime_secs(path)?;
+
+    // Only check WAL/SHM siblings for .db files
+    let ext = path.extension().and_then(|e| e.to_str());
+    if ext != Some("db") {
+        return Some(base);
+    }
+
+    let path_str = path.to_string_lossy();
+    let wal_mtime = file_mtime_secs(Path::new(&format!("{path_str}-wal"))).unwrap_or(0);
+    let shm_mtime = file_mtime_secs(Path::new(&format!("{path_str}-shm"))).unwrap_or(0);
+
+    Some(base.max(wal_mtime).max(shm_mtime))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +503,11 @@ mod tests {
     /// Create an in-memory cache for testing.
     fn test_cache() -> Cache {
         let conn = Connection::open_in_memory().unwrap();
+        conn.busy_timeout(Duration::from_secs(5)).unwrap();
+        conn.pragma_update(None, "journal_mode", "wal")
+            .unwrap_or_else(|_| {
+                // In-memory databases don't support WAL — that's expected
+            });
         let cache = Cache { conn };
         cache.init_schema().unwrap();
         cache
@@ -397,6 +546,30 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].provider, "claude-code");
         assert_eq!(loaded[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn test_write_entries_transaction() {
+        let mut cache = test_cache();
+        let entries_a = vec![make_record("opencode", "2026-03-10T10:00:00Z", None)];
+        let entries_b = vec![
+            make_record("claude-code", "2026-03-10T11:00:00Z", Some("s1")),
+            make_record("claude-code", "2026-03-10T12:00:00Z", Some("s1")),
+        ];
+
+        let files: Vec<(&Path, i64, Vec<Record>)> = vec![
+            (Path::new("/data/opencode.db"), 5000, entries_a),
+            (Path::new("/data/session.jsonl"), 6000, entries_b),
+        ];
+
+        let written = cache.write_entries(&files).unwrap();
+        assert_eq!(written, 3);
+
+        let loaded = cache.load_all_entries().unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        // Verify discovery timestamp was set
+        assert!(!cache.should_rediscover(60));
     }
 
     #[test]

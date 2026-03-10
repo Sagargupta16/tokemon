@@ -7,7 +7,7 @@ Build from the symlinked directory (`~/code/tokenusage`), which avoids OneDrive 
 ```bash
 cargo build --release            # debug: cargo build
 cargo test                       # run all tests
-cp target/release/tokemon ~/.local/bin/tokemon
+cp target/release/tokemon ~/.local/bin/tokemon && codesign -s - --force ~/.local/bin/tokemon
 ```
 
 ## Lint

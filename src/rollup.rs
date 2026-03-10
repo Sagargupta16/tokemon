@@ -151,14 +151,21 @@ fn build_summaries(grouped: BTreeMap<NaiveDate, (String, Vec<&Record>)>) -> Vec<
     let mut summaries = Vec::new();
 
     for (date, (label, entries)) in grouped {
-        let mut model_map: HashMap<(&str, &str), ModelUsage> = HashMap::new();
+        // Key by (provider, normalized_model) so the same model used via
+        // different routing prefixes (e.g., "vertexai.claude-opus-4-6"
+        // from OpenCode vs "claude-opus-4-6" from Claude Code) still
+        // aggregates as separate rows per client, but doesn't create
+        // duplicate model entries within the same client.
+        let mut model_map: HashMap<(String, String), ModelUsage> = HashMap::new();
 
         for entry in &entries {
-            let model_name = entry.model.as_deref().unwrap_or("unknown");
-            let key = (&*entry.provider, model_name);
+            let raw_model = entry.model.as_deref().unwrap_or("unknown");
+            let norm = display::normalize_model(raw_model);
+            let key = (entry.provider.to_string(), norm.clone());
 
             let mu = model_map.entry(key).or_insert_with(|| ModelUsage {
-                model: model_name.to_string(),
+                model: norm,
+                raw_model: raw_model.to_string(),
                 provider: entry.provider.to_string(),
                 ..Default::default()
             });

@@ -343,7 +343,12 @@ fn render_breakdown(report: &Report, color: bool, cols: &BreakdownCols) -> Strin
             };
             let mut row: Vec<String> = vec![String::new(), label];
             if show_api {
-                row.push(display::infer_api_provider(&model.model));
+                let raw = if model.raw_model.is_empty() {
+                    &model.model
+                } else {
+                    &model.raw_model
+                };
+                row.push(display::infer_api_provider(raw));
             }
             if show_client {
                 row.push(display::display_client(&model.provider));
@@ -424,7 +429,12 @@ fn build_disambiguation_suffixes(
 
             let mut parts = Vec::new();
             if !show_api {
-                let api = display::infer_api_provider(&models[i].model);
+                let raw = if models[i].raw_model.is_empty() {
+                    &models[i].model
+                } else {
+                    &models[i].raw_model
+                };
+                let api = display::infer_api_provider(raw);
                 if !api.is_empty() {
                     parts.push(api);
                 }
@@ -731,7 +741,11 @@ pub fn print_csv_breakdown(report: &Report) {
                 "{},{},{},{},{},{},{},{},{},{},{:.2}",
                 csv_quote(&s.label),
                 csv_quote(&display::display_model(&m.model)),
-                csv_quote(&display::infer_api_provider(&m.model)),
+                csv_quote(&display::infer_api_provider(if m.raw_model.is_empty() {
+                    &m.model
+                } else {
+                    &m.raw_model
+                })),
                 csv_quote(&display::display_client(&m.provider)),
                 m.input_tokens,
                 m.output_tokens,
