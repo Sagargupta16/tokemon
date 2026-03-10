@@ -5,7 +5,7 @@ use chrono::{Datelike, NaiveDate, Timelike, Utc};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::Config;
-use crate::render::format_tokens_short;
+use crate::render::{self, format_tokens_short};
 use crate::source::SourceSet;
 use crate::types::{DailySummary, ModelUsage, Record};
 use crate::{cache, cost, dedup, rollup};
@@ -69,7 +69,7 @@ pub struct CardData {
 impl CardData {
     #[must_use]
     pub fn cost_str(&self) -> String {
-        format_cost_compact(self.cost)
+        render::format_cost(self.cost)
     }
 
     #[must_use]
@@ -807,19 +807,5 @@ fn compute_trend(data: &[u64]) -> i8 {
         -1 // decreasing
     } else {
         0 // flat
-    }
-}
-
-fn format_cost_compact(cost: f64) -> String {
-    // Round to 4 decimal places to avoid float precision jitter
-    let rounded = (cost * 10_000.0).round() / 10_000.0;
-    if rounded == 0.0 {
-        "$0.00".to_string()
-    } else if rounded < 0.01 {
-        format!("${rounded:.4}")
-    } else if rounded >= 100.0 {
-        format!("${rounded:.0}")
-    } else {
-        format!("${rounded:.2}")
     }
 }

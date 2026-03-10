@@ -823,14 +823,25 @@ pub fn print_sessions_json(report: &SessionReport) {
     }
 }
 
-fn format_cost(cost: f64) -> String {
-    if cost == 0.0 {
-        return "$0.00".to_string();
-    }
-    if cost < 0.01 {
-        format!("${:.4}", cost)
+/// Format a USD cost value for display.
+///
+/// Rounds to 4 decimal places first (avoids float jitter in live TUI),
+/// then selects precision based on magnitude:
+/// - `$0.00` for zero
+/// - `$0.0012` (4dp) for values under 1 cent
+/// - `$123` (0dp) for values >= $100
+/// - `$1.23` (2dp) for everything else
+#[must_use]
+pub fn format_cost(cost: f64) -> String {
+    let rounded = (cost * 10_000.0).round() / 10_000.0;
+    if rounded == 0.0 {
+        "$0.00".to_string()
+    } else if rounded < 0.01 {
+        format!("${rounded:.4}")
+    } else if rounded >= 100.0 {
+        format!("${rounded:.0}")
     } else {
-        format!("${:.2}", cost)
+        format!("${rounded:.2}")
     }
 }
 

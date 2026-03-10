@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::display;
-use crate::render::format_tokens_short;
+use crate::render::{format_cost, format_tokens_short};
 use crate::tui::app::App;
 use crate::tui::diff::RowKey;
 use crate::tui::theme;
@@ -360,19 +360,6 @@ fn choose_columns(width: usize) -> ColumnSet {
             show_input: false,
             show_output: false,
         }
-    }
-}
-
-fn format_cost(cost: f64) -> String {
-    // Round to 4 decimal places to avoid float precision jitter
-    // that causes flickering between format thresholds.
-    let rounded = (cost * 10_000.0).round() / 10_000.0;
-    if rounded == 0.0 {
-        "$0.00".to_string()
-    } else if rounded < 0.01 {
-        format!("${rounded:.4}")
-    } else {
-        format!("${rounded:.2}")
     }
 }
 
