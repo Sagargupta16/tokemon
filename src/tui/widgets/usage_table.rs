@@ -312,8 +312,8 @@ fn format_cost(cost: f64) -> String {
     if cost == 0.0 {
         "$0.00".to_string()
     } else if cost < 0.01 {
-        format!("${:.4}", cost)
+        format!("${cost:.4}")
     } else {
-        format!("${:.2}", cost)
+        format!("${cost:.2}")
     }
 }

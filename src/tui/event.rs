@@ -1,28 +1,31 @@
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEventKind};
+use futures_lite::StreamExt;
 use tokio::sync::mpsc;
 
 /// Application-level events.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A key was pressed.
-    Key(KeyEvent),
-    /// Terminal was resized.
+    Key(crossterm::event::KeyEvent),
+    /// Terminal was resized (values used by ratatui's `frame.area()` implicitly).
+    #[allow(dead_code)]
     Resize(u16, u16),
     /// Tick — time to poll for data updates.
     Tick,
     /// Render — time to redraw the UI.
     Render,
-    /// The file watcher detected changes and updated the cache.
+    /// The file watcher detected changes and updated the cache (Phase 2).
+    #[allow(dead_code)]
     DataChanged,
 }
 
 /// Drives the event loop, forwarding crossterm events and emitting periodic
 /// tick / render events through an `mpsc` channel.
 pub struct EventHandler {
-    tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
+    _tx: mpsc::UnboundedSender<Event>,
     tick_rate: Duration,
     render_rate: Duration,
 }
@@ -36,67 +39,64 @@ impl EventHandler {
     pub fn new(tick_rate: Duration, render_rate: Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
-            tx,
             rx,
+            _tx: tx,
             tick_rate,
             render_rate,
         }
     }
 
-    /// Get a clone of the sender for external use (e.g. file watcher).
+    /// Get a clone of the sender for external use (e.g. file watcher, Phase 2).
     #[must_use]
+    #[allow(dead_code)]
     pub fn sender(&self) -> mpsc::UnboundedSender<Event> {
-        self.tx.clone()
+        self._tx.clone()
     }
 
-    /// Start the background event loop. This spawns a tokio task that runs
-    /// until the sender is dropped or the task is aborted.
+    /// Start the background event loop. This spawns a tokio task that
+    /// reads crossterm events and emits tick/render events on intervals.
     pub fn start(&self) {
-        let tx = self.tx.clone();
+        let tx = self._tx.clone();
         let tick_rate = self.tick_rate;
         let render_rate = self.render_rate;
 
         tokio::spawn(async move {
+            let mut crossterm_events = EventStream::new();
             let mut tick_interval = tokio::time::interval(tick_rate);
             let mut render_interval = tokio::time::interval(render_rate);
 
-            // Don't let missed ticks pile up — skip them.
             tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             render_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
-                tokio::select! {
-                    _ = tick_interval.tick() => {
-                        if tx.send(Event::Tick).is_err() {
-                            break;
-                        }
-                    }
-                    _ = render_interval.tick() => {
-                        if tx.send(Event::Render).is_err() {
-                            break;
-                        }
-                    }
-                    // Poll crossterm events with a short timeout so we can
-                    // interleave with tick/render.
-                    _ = tokio::task::spawn_blocking(|| {
-                        event::poll(Duration::from_millis(16))
-                    }) => {
-                        if let Ok(true) = event::poll(Duration::ZERO) {
-                            if let Ok(evt) = event::read() {
-                                let app_event = match evt {
-                                    CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                                        Some(Event::Key(key))
-                                    }
-                                    CrosstermEvent::Resize(w, h) => Some(Event::Resize(w, h)),
-                                    _ => None,
-                                };
-                                if let Some(e) = app_event {
-                                    if tx.send(e).is_err() {
-                                        break;
-                                    }
+                let event = tokio::select! {
+                    // Crossterm terminal events (key presses, resize, etc.)
+                    maybe_event = crossterm_events.next() => {
+                        match maybe_event {
+                            Some(Ok(evt)) => match evt {
+                                CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                                    Some(Event::Key(key))
                                 }
-                            }
+                                CrosstermEvent::Resize(w, h) => Some(Event::Resize(w, h)),
+                                _ => None,
+                            },
+                            // Stream ended or error — stop the loop
+                            Some(Err(_)) | None => break,
                         }
+                    }
+                    // Periodic tick for data refresh
+                    _ = tick_interval.tick() => {
+                        Some(Event::Tick)
+                    }
+                    // Periodic render
+                    _ = render_interval.tick() => {
+                        Some(Event::Render)
+                    }
+                };
+
+                if let Some(e) = event {
+                    if tx.send(e).is_err() {
+                        break;
                     }
                 }
             }

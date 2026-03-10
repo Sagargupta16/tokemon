@@ -35,7 +35,7 @@ impl Scope {
         match self {
             Self::Today => today,
             Self::Week => {
-                today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
+                today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()))
             }
             Self::Month => NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today),
         }
@@ -353,8 +353,10 @@ fn build_daily_sparkline(records: &[Record], days: usize) -> Vec<u64> {
     for record in records {
         let date = record.timestamp.date_naive();
         let offset = (today - date).num_days();
-        if offset >= 0 && (offset as usize) < days {
-            data[days - 1 - offset as usize] += record.total_tokens();
+        if let Ok(idx) = usize::try_from(offset) {
+            if idx < days {
+                data[days - 1 - idx] += record.total_tokens();
+            }
         }
     }
 
@@ -382,10 +384,10 @@ fn format_cost_compact(cost: f64) -> String {
     if cost == 0.0 {
         "$0.00".to_string()
     } else if cost < 0.01 {
-        format!("${:.4}", cost)
+        format!("${cost:.4}")
     } else if cost >= 100.0 {
-        format!("${:.0}", cost)
+        format!("${cost:.0}")
     } else {
-        format!("${:.2}", cost)
+        format!("${cost:.2}")
     }
 }

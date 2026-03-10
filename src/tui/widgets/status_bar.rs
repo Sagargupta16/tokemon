@@ -23,7 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
             spans.push(Span::styled("  ", theme::status_bar()));
         }
         spans.push(Span::styled(*key, theme::status_key()));
-        spans.push(Span::styled(format!(" {}", desc), theme::status_bar()));
+        spans.push(Span::styled(format!(" {desc}"), theme::status_bar()));
     }
 
     let line = Line::from(spans);

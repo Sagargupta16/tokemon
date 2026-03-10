@@ -40,10 +40,12 @@ pub const RED: Color = Color::Rgb(235, 85, 85);
 /// Cyan for headers and labels.
 pub const CYAN: Color = Color::Rgb(85, 205, 220);
 
-/// New-row flash colour.
+/// New-row flash colour (Phase 3).
+#[allow(dead_code)]
 pub const FLASH_NEW: Color = Color::Rgb(60, 90, 180);
 
-/// Update-row flash colour.
+/// Update-row flash colour (Phase 3).
+#[allow(dead_code)]
 pub const FLASH_UPDATE: Color = Color::Rgb(50, 160, 90);
 
 // ── Composite styles ──────────────────────────────────────────────────────
@@ -78,8 +80,9 @@ pub fn header() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Active tab indicator.
+/// Active tab indicator (Phase 3).
 #[must_use]
+#[allow(dead_code)]
 pub fn tab_active() -> Style {
     Style::default()
         .fg(BG)
@@ -87,8 +90,9 @@ pub fn tab_active() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Inactive tab.
+/// Inactive tab (Phase 3).
 #[must_use]
+#[allow(dead_code)]
 pub fn tab_inactive() -> Style {
     Style::default().fg(DIM).bg(SURFACE)
 }
