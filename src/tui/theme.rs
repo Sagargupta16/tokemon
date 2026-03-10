@@ -40,12 +40,10 @@ pub const RED: Color = Color::Rgb(235, 85, 85);
 /// Cyan for headers and labels.
 pub const CYAN: Color = Color::Rgb(85, 205, 220);
 
-/// New-row flash colour (Phase 3).
-#[allow(dead_code)]
+/// New-row flash colour — blue fade-in for newly appearing rows.
 pub const FLASH_NEW: Color = Color::Rgb(60, 90, 180);
 
-/// Update-row flash colour (Phase 3).
-#[allow(dead_code)]
+/// Update-row flash colour — green flash for updated values.
 pub const FLASH_UPDATE: Color = Color::Rgb(50, 160, 90);
 
 // ── Composite styles ──────────────────────────────────────────────────────

@@ -52,6 +52,8 @@ pub struct CardData {
     pub cost: f64,
     pub tokens: u64,
     pub sparkline: Vec<u64>,
+    /// Trend indicator: positive = increasing, negative = decreasing, zero = flat.
+    pub trend: i8,
 }
 
 impl CardData {
@@ -64,10 +66,60 @@ impl CardData {
     pub fn tokens_str(&self) -> String {
         format!("{} tokens", format_tokens_short(self.tokens))
     }
+
+    /// Trend arrow for display.
+    #[must_use]
+    pub fn trend_symbol(&self) -> &'static str {
+        match self.trend.cmp(&0) {
+            std::cmp::Ordering::Greater => "↑",
+            std::cmp::Ordering::Less => "↓",
+            std::cmp::Ordering::Equal => "−",
+        }
+    }
+}
+
+// ── Sort order ────────────────────────────────────────────────────────────
+
+/// Sort order for the detail table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    /// Sort by cost descending (default).
+    CostDesc,
+    /// Sort by total tokens descending.
+    TokensDesc,
+    /// Sort by model name ascending.
+    NameAsc,
+    /// Sort by request count descending.
+    RequestsDesc,
+}
+
+impl SortOrder {
+    /// Cycle to the next sort order.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::CostDesc => Self::TokensDesc,
+            Self::TokensDesc => Self::NameAsc,
+            Self::NameAsc => Self::RequestsDesc,
+            Self::RequestsDesc => Self::CostDesc,
+        }
+    }
+
+    /// Short label for display.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CostDesc => "cost",
+            Self::TokensDesc => "tokens",
+            Self::NameAsc => "name",
+            Self::RequestsDesc => "requests",
+        }
+    }
 }
 
 // ── App state ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     /// Currently selected detail scope.
     pub scope: Scope,
@@ -82,7 +134,7 @@ pub struct App {
     /// Detail totals.
     pub detail_total_cost: f64,
     pub detail_total_tokens: u64,
-    /// Historical summaries (populated when show_history is true).
+    /// Historical summaries (populated when `show_history` is true).
     pub history_summaries: Vec<DailySummary>,
     /// Scroll offset for the detail table.
     pub scroll_offset: u16,
@@ -90,8 +142,18 @@ pub struct App {
     pub should_quit: bool,
     /// Whether the help overlay is shown.
     pub show_help: bool,
+    /// Whether the filter input is active.
+    pub filter_active: bool,
+    /// Current filter input text.
+    pub filter_text: String,
+    /// Applied filter (empty = no filter).
+    pub applied_filter: String,
+    /// Current sort order.
+    pub sort_order: SortOrder,
     /// Recent row changes detected by the diff engine (for animations).
     pub recent_changes: Vec<RowChange>,
+    /// Set to `true` when the scope changes (for view-switch animation).
+    pub view_switched: bool,
     /// Config reference.
     config: Config,
     /// Cached raw records for the current data load.
@@ -113,18 +175,21 @@ impl App {
                     cost: 0.0,
                     tokens: 0,
                     sparkline: Vec::new(),
+                    trend: 0,
                 },
                 CardData {
                     label: "This Week",
                     cost: 0.0,
                     tokens: 0,
                     sparkline: Vec::new(),
+                    trend: 0,
                 },
                 CardData {
                     label: "This Month",
                     cost: 0.0,
                     tokens: 0,
                     sparkline: Vec::new(),
+                    trend: 0,
                 },
             ],
             detail_models: Vec::new(),
@@ -134,7 +199,12 @@ impl App {
             scroll_offset: 0,
             should_quit: false,
             show_help: false,
+            filter_active: false,
+            filter_text: String::new(),
+            applied_filter: String::new(),
+            sort_order: SortOrder::CostDesc,
             recent_changes: Vec::new(),
+            view_switched: false,
             config: config.clone(),
             cached_records: Vec::new(),
             prev_models: Vec::new(),
@@ -144,15 +214,14 @@ impl App {
     }
 
     /// Handle an incoming event. Returns `true` if the UI needs a redraw.
-    pub fn handle_event(&mut self, event: Event) -> bool {
+    pub fn handle_event(&mut self, event: &Event) -> bool {
         match event {
-            Event::Key(key) => self.handle_key(key),
+            Event::Key(key) => self.handle_key(*key),
             Event::Tick | Event::DataChanged => {
                 self.refresh_data();
                 true
             }
-            Event::Resize(_, _) => true,
-            Event::Render => true,
+            Event::Resize(_, _) | Event::Render => true,
         }
     }
 
@@ -163,30 +232,55 @@ impl App {
             return true;
         }
 
+        // Filter input mode
+        if self.filter_active {
+            return self.handle_filter_key(key);
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                self.should_quit = true;
-                false
+                if self.applied_filter.is_empty() {
+                    self.should_quit = true;
+                    false
+                } else {
+                    // First Esc/q clears the filter
+                    self.applied_filter.clear();
+                    self.recompute_detail();
+                    true
+                }
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
                 true
             }
+            KeyCode::Char('/') => {
+                self.filter_active = true;
+                self.filter_text = self.applied_filter.clone();
+                true
+            }
             KeyCode::Char('t') => {
                 self.scope = Scope::Today;
                 self.scroll_offset = 0;
+                self.view_switched = true;
                 self.recompute_detail();
                 true
             }
             KeyCode::Char('w') => {
                 self.scope = Scope::Week;
                 self.scroll_offset = 0;
+                self.view_switched = true;
                 self.recompute_detail();
                 true
             }
             KeyCode::Char('m') => {
                 self.scope = Scope::Month;
                 self.scroll_offset = 0;
+                self.view_switched = true;
+                self.recompute_detail();
+                true
+            }
+            KeyCode::Char('s') => {
+                self.sort_order = self.sort_order.next();
                 self.recompute_detail();
                 true
             }
@@ -205,6 +299,32 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Enter => {
+                self.filter_active = false;
+                self.applied_filter = self.filter_text.clone();
+                self.scroll_offset = 0;
+                self.recompute_detail();
+                true
+            }
+            KeyCode::Esc => {
+                self.filter_active = false;
+                self.filter_text.clear();
+                true
+            }
+            KeyCode::Char(c) => {
+                self.filter_text.push(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.filter_text.pop();
                 true
             }
             _ => false,
@@ -270,6 +390,11 @@ impl App {
 
         // Today sparkline: hourly totals for today
         self.cards[0].sparkline = build_hourly_sparkline(&self.cached_records);
+
+        // Compute trends from sparkline data
+        for card in &mut self.cards {
+            card.trend = compute_trend(&card.sparkline);
+        }
     }
 
     fn recompute_detail(&mut self) {
@@ -307,7 +432,46 @@ impl App {
         }
 
         let mut models: Vec<ModelUsage> = model_map.into_values().collect();
-        models.sort_unstable_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
+
+        // Apply provider/model filter if set
+        if !self.applied_filter.is_empty() {
+            let filter_lower = self.applied_filter.to_lowercase();
+            models.retain(|m| {
+                m.model.to_lowercase().contains(&filter_lower)
+                    || m.provider.to_lowercase().contains(&filter_lower)
+                    || crate::display::infer_api_provider(&m.model)
+                        .to_lowercase()
+                        .contains(&filter_lower)
+            });
+        }
+
+        // Apply current sort order
+        match self.sort_order {
+            SortOrder::CostDesc => {
+                models.sort_unstable_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
+            }
+            SortOrder::TokensDesc => {
+                models.sort_unstable_by(|a, b| {
+                    let ta = a.input_tokens
+                        + a.output_tokens
+                        + a.cache_read_tokens
+                        + a.cache_creation_tokens
+                        + a.thinking_tokens;
+                    let tb = b.input_tokens
+                        + b.output_tokens
+                        + b.cache_read_tokens
+                        + b.cache_creation_tokens
+                        + b.thinking_tokens;
+                    tb.cmp(&ta)
+                });
+            }
+            SortOrder::NameAsc => {
+                models.sort_unstable_by(|a, b| a.model.cmp(&b.model));
+            }
+            SortOrder::RequestsDesc => {
+                models.sort_unstable_by(|a, b| b.request_count.cmp(&a.request_count));
+            }
+        }
 
         self.detail_total_cost = models.iter().map(|m| m.cost_usd).sum();
         self.detail_total_tokens = models
@@ -325,8 +489,7 @@ impl App {
         // Historical summaries for the history view
         if self.show_history {
             self.history_summaries = match self.scope {
-                Scope::Today => rollup::aggregate_daily(&filtered),
-                Scope::Week => rollup::aggregate_daily(&filtered),
+                Scope::Today | Scope::Week => rollup::aggregate_daily(&filtered),
                 Scope::Month => rollup::aggregate_weekly(&filtered),
             };
         } else {
@@ -340,9 +503,8 @@ impl App {
 fn load_records_from_cache(config: &Config) -> Vec<Record> {
     use crate::cache::Cache;
 
-    let cache = match Cache::open() {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(cache) = Cache::open() else {
+        return Vec::new();
     };
 
     // Load everything — the TUI filters in memory for card summaries.
@@ -380,9 +542,9 @@ fn build_daily_sparkline(records: &[Record], days: usize) -> Vec<u64> {
     let mut data = vec![0u64; days];
 
     for record in records {
-        let date = record.timestamp.date_naive();
-        let offset = (today - date).num_days();
-        if let Ok(idx) = usize::try_from(offset) {
+        let record_date = record.timestamp.date_naive();
+        let day_offset = (today - record_date).num_days();
+        if let Ok(idx) = usize::try_from(day_offset) {
             if idx < days {
                 data[days - 1 - idx] += record.total_tokens();
             }
@@ -407,6 +569,23 @@ fn build_hourly_sparkline(records: &[Record]) -> Vec<u64> {
     }
 
     data
+}
+
+/// Compute a simple trend from sparkline data.
+/// Compares the last value to the average of previous values.
+fn compute_trend(data: &[u64]) -> i8 {
+    if data.len() < 2 {
+        return 0;
+    }
+    let last = data[data.len() - 1];
+    let prev_avg = data[..data.len() - 1].iter().sum::<u64>() / (data.len() as u64 - 1).max(1);
+    if last > prev_avg.saturating_add(prev_avg / 10) {
+        1 // increasing
+    } else if last < prev_avg.saturating_sub(prev_avg / 10) {
+        -1 // decreasing
+    } else {
+        0 // flat
+    }
 }
 
 fn format_cost_compact(cost: f64) -> String {

@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Block;
 use ratatui::Frame;
 
@@ -6,6 +6,12 @@ use crate::tui::app::App;
 use crate::tui::theme;
 use crate::tui::views::help;
 use crate::tui::widgets::{header, status_bar, summary_cards, usage_table};
+
+/// Areas returned by the dashboard render for effect targeting.
+pub struct DashboardAreas {
+    /// The area occupied by the usage table.
+    pub table_area: Rect,
+}
 
 /// Render the complete dashboard view.
 ///
@@ -17,7 +23,9 @@ use crate::tui::widgets::{header, status_bar, summary_cards, usage_table};
 /// ├────────────── status bar (1 line) ──────────┤
 /// └─────────────────────────────────────────────┘
 /// ```
-pub fn render(frame: &mut Frame, app: &App) {
+///
+/// Returns the layout areas for effect targeting.
+pub fn render(frame: &mut Frame, app: &App) -> DashboardAreas {
     let area = frame.area();
 
     // Fill the entire background
@@ -59,14 +67,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 
     // Usage table
-    usage_table::render(frame, layout[idx], app);
+    let table_area = layout[idx];
+    usage_table::render(frame, table_area, app);
     idx += 1;
 
     // Status bar
-    status_bar::render(frame, layout[idx]);
+    status_bar::render(frame, layout[idx], app);
 
     // Help overlay (rendered on top of everything)
     if app.show_help {
         help::render(frame);
     }
+
+    DashboardAreas { table_area }
 }

@@ -10,6 +10,7 @@ use crate::tui::app::App;
 use crate::tui::theme;
 
 /// Render the main usage detail table.
+#[allow(clippy::too_many_lines)]
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -24,6 +25,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     if inner.height < 3 || inner.width < 20 {
+        return;
+    }
+
+    // Empty state
+    if app.detail_models.is_empty() && app.history_summaries.is_empty() {
+        let msg = if app.applied_filter.is_empty() {
+            "No usage data found for this period".to_string()
+        } else {
+            format!("No models matching \"{}\"", app.applied_filter)
+        };
+        let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(Span::styled(
+            msg,
+            theme::text_dim(),
+        )))
+        .alignment(ratatui::layout::Alignment::Center);
+        let centered_area = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
+        frame.render_widget(paragraph, centered_area);
         return;
     }
 
@@ -136,6 +154,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Which columns to display, based on available width.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 struct ColumnSet {
     show_api: bool,
     show_client: bool,
@@ -144,7 +163,7 @@ struct ColumnSet {
 }
 
 impl ColumnSet {
-    fn headers(&self) -> Vec<String> {
+    fn headers(self) -> Vec<String> {
         let mut h = vec!["Model".to_string()];
         if self.show_api {
             h.push("API".to_string());
@@ -163,7 +182,7 @@ impl ColumnSet {
         h
     }
 
-    fn widths(&self) -> Vec<Constraint> {
+    fn widths(self) -> Vec<Constraint> {
         let mut w: Vec<Constraint> = vec![Constraint::Min(12)]; // Model
         if self.show_api {
             w.push(Constraint::Length(12));
@@ -184,7 +203,7 @@ impl ColumnSet {
 
     #[allow(clippy::too_many_arguments)]
     fn build_row(
-        &self,
+        self,
         col0: &str,
         col1: &str,
         col2: &str,
@@ -251,7 +270,7 @@ impl ColumnSet {
         cells
     }
 
-    fn build_total_row(&self, total_tokens: u64, total_cost: f64) -> Vec<Cell<'static>> {
+    fn build_total_row(self, total_tokens: u64, total_cost: f64) -> Vec<Cell<'static>> {
         let style = theme::total_row();
         let mut cells: Vec<Cell> = vec![Cell::from(Span::styled("TOTAL", style))];
         if self.show_api {

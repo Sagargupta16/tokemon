@@ -74,13 +74,26 @@ fn render_card(frame: &mut Frame, area: Rect, card: &crate::tui::app::CardData, 
 
     let card_areas = Layout::vertical(constraints).split(inner);
 
-    // Label
+    // Label with trend indicator
     let label_style = if active {
         theme::card_label().add_modifier(Modifier::UNDERLINED)
     } else {
         theme::card_label()
     };
-    let label = Line::from(Span::styled(card.label, label_style));
+    let trend_color = match card.trend.cmp(&0) {
+        std::cmp::Ordering::Greater => theme::GREEN,
+        std::cmp::Ordering::Less => theme::RED,
+        std::cmp::Ordering::Equal => theme::DIM,
+    };
+    let label = Line::from(vec![
+        Span::styled(card.label, label_style),
+        Span::styled(
+            format!(" {}", card.trend_symbol()),
+            ratatui::style::Style::default()
+                .fg(trend_color)
+                .bg(theme::SURFACE),
+        ),
+    ]);
     frame.render_widget(label, card_areas[0]);
 
     // Cost
