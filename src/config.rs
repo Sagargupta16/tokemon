@@ -192,6 +192,22 @@ impl Config {
         Ok(path)
     }
 
+    /// Save the current config to disk.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        let header = "# Tokemon configuration\n\
+                      # Location: ~/.config/tokemon/config.toml\n\
+                      #\n\
+                      # Changes here affect default behavior.\n\
+                      # CLI flags always override config values.\n\n";
+        fs::write(&path, format!("{header}{content}"))?;
+        Ok(())
+    }
+
     pub fn config_path() -> PathBuf {
         let config_dir = directories::ProjectDirs::from("", "", "tokemon")
             .map(|d| d.config_dir().to_path_buf())

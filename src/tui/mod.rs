@@ -44,9 +44,7 @@ pub fn run(config: &Config, initial_view: &str, tick_interval: u64) -> anyhow::R
     // Build a tokio runtime for the async event loop.
     let runtime = tokio::runtime::Runtime::new()?;
 
-    runtime.block_on(async {
-        run_async(config, scope, tick_secs).await
-    })
+    runtime.block_on(async { run_async(config, scope, tick_secs).await })
 }
 
 async fn run_async(config: &Config, scope: Scope, tick_secs: u64) -> anyhow::Result<()> {

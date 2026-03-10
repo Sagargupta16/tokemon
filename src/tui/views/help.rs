@@ -11,7 +11,7 @@ pub fn render(frame: &mut Frame) {
 
     // Size the popup: 50 cols wide, 18 rows tall (or smaller if terminal is tiny)
     let popup_width = area.width.min(52);
-    let popup_height = area.height.min(20);
+    let popup_height = area.height.min(22);
 
     let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
         .flex(Flex::Center)
@@ -41,6 +41,7 @@ pub fn render(frame: &mut Frame) {
         ("/", "Filter by model/provider"),
         ("j / ↓", "Scroll table down"),
         ("k / ↑", "Scroll table up"),
+        ("S", "Open settings editor"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit (or clear filter)"),
         ("", ""),

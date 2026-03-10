@@ -4,7 +4,7 @@ use ratatui::Frame;
 
 use crate::tui::app::App;
 use crate::tui::theme;
-use crate::tui::views::help;
+use crate::tui::views::{help, settings};
 use crate::tui::widgets::{header, status_bar, summary_cards, usage_table};
 
 /// Render the complete dashboard view.
@@ -65,8 +65,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Status bar
     status_bar::render(frame, layout[idx], app);
 
-    // Help overlay (rendered on top of everything)
+    // Overlays (rendered on top of everything)
     if app.show_help {
         help::render(frame);
+    }
+    if app.show_settings {
+        settings::render(frame, app);
     }
 }

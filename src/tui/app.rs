@@ -162,6 +162,299 @@ impl SortOrder {
     }
 }
 
+// ── Settings state ────────────────────────────────────────────────────────
+
+/// Which field is being displayed/edited in the settings view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingField {
+    TickInterval,
+    NoCost,
+    DefaultCommand,
+    SortOrder,
+    BudgetDaily,
+    BudgetWeekly,
+    BudgetMonthly,
+    ColDate,
+    ColModel,
+    ColApiProvider,
+    ColClient,
+    ColInput,
+    ColOutput,
+    ColCacheWrite,
+    ColCacheRead,
+    ColTotalTokens,
+    ColCost,
+}
+
+impl SettingField {
+    /// Total number of settings fields.
+    pub const COUNT: usize = 17;
+
+    /// All fields in display order.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::TickInterval,
+        Self::NoCost,
+        Self::DefaultCommand,
+        Self::SortOrder,
+        Self::BudgetDaily,
+        Self::BudgetWeekly,
+        Self::BudgetMonthly,
+        Self::ColDate,
+        Self::ColModel,
+        Self::ColApiProvider,
+        Self::ColClient,
+        Self::ColInput,
+        Self::ColOutput,
+        Self::ColCacheWrite,
+        Self::ColCacheRead,
+        Self::ColTotalTokens,
+        Self::ColCost,
+    ];
+
+    /// Display label for this field.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TickInterval => "Tick Interval (s)",
+            Self::NoCost => "Disable Costs",
+            Self::DefaultCommand => "Default Command",
+            Self::SortOrder => "Sort Order",
+            Self::BudgetDaily => "Daily Budget ($)",
+            Self::BudgetWeekly => "Weekly Budget ($)",
+            Self::BudgetMonthly => "Monthly Budget ($)",
+            Self::ColDate => "Column: Date",
+            Self::ColModel => "Column: Model",
+            Self::ColApiProvider => "Column: API Provider",
+            Self::ColClient => "Column: Client",
+            Self::ColInput => "Column: Input",
+            Self::ColOutput => "Column: Output",
+            Self::ColCacheWrite => "Column: Cache Write",
+            Self::ColCacheRead => "Column: Cache Read",
+            Self::ColTotalTokens => "Column: Total Tokens",
+            Self::ColCost => "Column: Cost",
+        }
+    }
+
+    /// Section header for visual grouping (returns Some for the first item in each section).
+    #[must_use]
+    pub fn section_header(self) -> Option<&'static str> {
+        match self {
+            Self::TickInterval => Some("General"),
+            Self::BudgetDaily => Some("Budget Limits"),
+            Self::ColDate => Some("Columns"),
+            _ => None,
+        }
+    }
+
+    /// Whether this field is a boolean toggle.
+    #[must_use]
+    pub fn is_bool(self) -> bool {
+        matches!(
+            self,
+            Self::NoCost
+                | Self::ColDate
+                | Self::ColModel
+                | Self::ColApiProvider
+                | Self::ColClient
+                | Self::ColInput
+                | Self::ColOutput
+                | Self::ColCacheWrite
+                | Self::ColCacheRead
+                | Self::ColTotalTokens
+                | Self::ColCost
+        )
+    }
+
+    /// Whether this field is an enum that cycles through values.
+    #[must_use]
+    pub fn is_enum(self) -> bool {
+        matches!(self, Self::DefaultCommand | Self::SortOrder)
+    }
+
+    /// Get the current value as a display string from a config.
+    #[must_use]
+    pub fn display_value(self, config: &Config) -> String {
+        match self {
+            Self::TickInterval => {
+                let v = config.tick_interval;
+                if v == 0 {
+                    "2 (default)".to_string()
+                } else {
+                    v.to_string()
+                }
+            }
+            Self::NoCost => if config.no_cost { "Yes" } else { "No" }.to_string(),
+            Self::DefaultCommand => config.default_command.clone(),
+            Self::SortOrder => config.sort_order.clone(),
+            Self::BudgetDaily => config
+                .budget
+                .daily
+                .map_or("--".to_string(), |v| format!("{v:.2}")),
+            Self::BudgetWeekly => config
+                .budget
+                .weekly
+                .map_or("--".to_string(), |v| format!("{v:.2}")),
+            Self::BudgetMonthly => config
+                .budget
+                .monthly
+                .map_or("--".to_string(), |v| format!("{v:.2}")),
+            Self::ColDate => bool_display(config.columns.date),
+            Self::ColModel => bool_display(config.columns.model),
+            Self::ColApiProvider => bool_display(config.columns.api_provider),
+            Self::ColClient => bool_display(config.columns.client),
+            Self::ColInput => bool_display(config.columns.input),
+            Self::ColOutput => bool_display(config.columns.output),
+            Self::ColCacheWrite => bool_display(config.columns.cache_write),
+            Self::ColCacheRead => bool_display(config.columns.cache_read),
+            Self::ColTotalTokens => bool_display(config.columns.total_tokens),
+            Self::ColCost => bool_display(config.columns.cost),
+        }
+    }
+
+    /// Toggle a boolean field on the given config. No-op for non-bool fields.
+    pub fn toggle_bool(self, config: &mut Config) {
+        match self {
+            Self::NoCost => config.no_cost = !config.no_cost,
+            Self::ColDate => config.columns.date = !config.columns.date,
+            Self::ColModel => config.columns.model = !config.columns.model,
+            Self::ColApiProvider => config.columns.api_provider = !config.columns.api_provider,
+            Self::ColClient => config.columns.client = !config.columns.client,
+            Self::ColInput => config.columns.input = !config.columns.input,
+            Self::ColOutput => config.columns.output = !config.columns.output,
+            Self::ColCacheWrite => config.columns.cache_write = !config.columns.cache_write,
+            Self::ColCacheRead => config.columns.cache_read = !config.columns.cache_read,
+            Self::ColTotalTokens => config.columns.total_tokens = !config.columns.total_tokens,
+            Self::ColCost => config.columns.cost = !config.columns.cost,
+            _ => {}
+        }
+    }
+
+    /// Cycle an enum field to its next value. No-op for non-enum fields.
+    pub fn cycle_enum(self, config: &mut Config) {
+        match self {
+            Self::DefaultCommand => {
+                config.default_command = match config.default_command.as_str() {
+                    "daily" => "weekly".to_string(),
+                    "weekly" => "monthly".to_string(),
+                    _ => "daily".to_string(),
+                };
+            }
+            Self::SortOrder => {
+                config.sort_order = match config.sort_order.as_str() {
+                    "asc" => "desc".to_string(),
+                    _ => "asc".to_string(),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a string value from the edit buffer to the config.
+    /// Returns `true` if the value was valid and applied.
+    pub fn apply_value(self, config: &mut Config, value: &str) -> bool {
+        match self {
+            Self::TickInterval => {
+                if let Ok(v) = value.parse::<u64>() {
+                    config.tick_interval = v.min(300);
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::BudgetDaily => apply_budget_value(&mut config.budget.daily, value),
+            Self::BudgetWeekly => apply_budget_value(&mut config.budget.weekly, value),
+            Self::BudgetMonthly => apply_budget_value(&mut config.budget.monthly, value),
+            _ => false,
+        }
+    }
+
+    /// Get the raw edit value (for pre-populating the edit buffer).
+    #[must_use]
+    pub fn edit_value(self, config: &Config) -> String {
+        match self {
+            Self::TickInterval => config.tick_interval.to_string(),
+            Self::BudgetDaily => config
+                .budget
+                .daily
+                .map_or(String::new(), |v| format!("{v:.2}")),
+            Self::BudgetWeekly => config
+                .budget
+                .weekly
+                .map_or(String::new(), |v| format!("{v:.2}")),
+            Self::BudgetMonthly => config
+                .budget
+                .monthly
+                .map_or(String::new(), |v| format!("{v:.2}")),
+            _ => String::new(),
+        }
+    }
+}
+
+fn bool_display(v: bool) -> String {
+    if v { "Yes" } else { "No" }.to_string()
+}
+
+fn apply_budget_value(target: &mut Option<f64>, value: &str) -> bool {
+    if value.is_empty() {
+        *target = None;
+        return true;
+    }
+    if let Ok(v) = value.parse::<f64>() {
+        if v > 0.0 {
+            *target = Some(v);
+        } else {
+            *target = None;
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Interactive settings editor state.
+pub struct SettingsState {
+    /// Working copy of config — edits happen here.
+    pub draft: Config,
+    /// Whether the draft differs from the saved config.
+    pub unsaved: bool,
+    /// Currently selected field index.
+    pub selected: usize,
+    /// Whether we're currently editing a text/numeric field.
+    pub editing: bool,
+    /// Text buffer for the field being edited.
+    pub edit_buffer: String,
+    /// Brief confirmation message (e.g. "Saved!"), with the instant it was set.
+    pub flash_message: Option<(String, Instant)>,
+}
+
+impl SettingsState {
+    fn new(config: &Config) -> Self {
+        Self {
+            draft: config.clone(),
+            unsaved: false,
+            selected: 0,
+            editing: false,
+            edit_buffer: String::new(),
+            flash_message: None,
+        }
+    }
+
+    /// The currently selected field.
+    #[must_use]
+    pub fn current_field(&self) -> SettingField {
+        SettingField::ALL[self.selected]
+    }
+
+    /// Check if flash message has expired (>2s).
+    pub fn expire_flash(&mut self) {
+        if let Some((_, t)) = &self.flash_message {
+            if t.elapsed().as_secs_f64() >= 2.0 {
+                self.flash_message = None;
+            }
+        }
+    }
+}
+
 // ── App state ─────────────────────────────────────────────────────────────
 
 #[allow(clippy::struct_excessive_bools)]
@@ -203,9 +496,15 @@ pub struct App {
     /// with the instant it was received. Displayed in the status bar
     /// for a few seconds then cleared.
     pub last_warning: Option<(String, Instant)>,
+    /// Whether the settings overlay is shown.
+    pub show_settings: bool,
+    /// Settings editor state.
+    pub settings_state: SettingsState,
     /// Whether the UI state has changed and needs a redraw.
     /// Set by event handlers, cleared after each frame is drawn.
     pub dirty: bool,
+    /// Snapshot of config as passed to App (for settings editor).
+    config: Config,
     /// Cached pricing engine (loaded once at startup, reused for all reads).
     pricing: Option<cost::PricingEngine>,
     /// Source registry (created once, reused for tick-based polling).
@@ -265,7 +564,10 @@ impl App {
             sort_order: SortOrder::CostDesc,
             highlight_map: HashMap::new(),
             last_warning: None,
+            show_settings: false,
+            settings_state: SettingsState::new(config),
             dirty: true,
+            config: config.clone(),
             pricing: None,
             registry: SourceSet::new(),
             no_cost: config.no_cost,
@@ -306,6 +608,13 @@ impl App {
                         self.dirty = true;
                     }
                 }
+                // Expire settings flash message
+                if self.settings_state.flash_message.is_some() {
+                    self.settings_state.expire_flash();
+                    if self.settings_state.flash_message.is_none() {
+                        self.dirty = true;
+                    }
+                }
                 self.dirty
             }
             Event::DataChanged => {
@@ -338,7 +647,13 @@ impl App {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // Settings overlay takes priority
+        if self.show_settings {
+            return self.handle_settings_key(key);
+        }
+
         // If help is shown, any key dismisses it
         if self.show_help {
             self.show_help = false;
@@ -364,6 +679,11 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+                true
+            }
+            KeyCode::Char('S') => {
+                self.show_settings = true;
+                self.settings_state = SettingsState::new(&self.config);
                 true
             }
             KeyCode::Char('/') => {
@@ -460,6 +780,112 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.filter_text.pop();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        let state = &mut self.settings_state;
+
+        // If editing a text/numeric field
+        if state.editing {
+            match key.code {
+                KeyCode::Enter => {
+                    let field = state.current_field();
+                    if field.apply_value(&mut state.draft, &state.edit_buffer) {
+                        state.unsaved = true;
+                    }
+                    state.editing = false;
+                    state.edit_buffer.clear();
+                    return true;
+                }
+                KeyCode::Esc => {
+                    state.editing = false;
+                    state.edit_buffer.clear();
+                    return true;
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                    state.edit_buffer.push(c);
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    state.edit_buffer.pop();
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
+        // Normal settings navigation
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('S') => {
+                // Close settings, discard unsaved changes
+                self.show_settings = false;
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                state.selected = (state.selected + 1).min(SettingField::COUNT - 1);
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                state.selected = state.selected.saturating_sub(1);
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let field = state.current_field();
+                if field.is_bool() {
+                    field.toggle_bool(&mut state.draft);
+                    state.unsaved = true;
+                    true
+                } else if field.is_enum() {
+                    field.cycle_enum(&mut state.draft);
+                    state.unsaved = true;
+                    true
+                } else {
+                    // Enter edit mode for numeric fields
+                    state.editing = true;
+                    state.edit_buffer = field.edit_value(&state.draft);
+                    true
+                }
+            }
+            KeyCode::Left => {
+                let field = state.current_field();
+                if field.is_enum() {
+                    // Cycle backwards — just cycle forward (there are only 2-3 values)
+                    field.cycle_enum(&mut state.draft);
+                    state.unsaved = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Right => {
+                let field = state.current_field();
+                if field.is_enum() {
+                    field.cycle_enum(&mut state.draft);
+                    state.unsaved = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Char('W') => {
+                // Save to disk
+                match state.draft.save() {
+                    Ok(()) => {
+                        self.config = state.draft.clone();
+                        self.no_cost = state.draft.no_cost;
+                        state.unsaved = false;
+                        state.flash_message = Some(("Saved!".to_string(), Instant::now()));
+                    }
+                    Err(e) => {
+                        self.last_warning =
+                            Some((format!("Failed to save config: {e}"), Instant::now()));
+                    }
+                }
                 true
             }
             _ => false,
