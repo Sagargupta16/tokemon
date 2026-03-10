@@ -78,6 +78,41 @@ impl CardData {
     }
 }
 
+// ── Group-by mode ─────────────────────────────────────────────────────────
+
+/// How to group rows in the detail table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupBy {
+    /// One row per model (aggregated across all clients).
+    Model,
+    /// One row per model+client combination.
+    ModelClient,
+    /// One row per client (aggregated across all models).
+    Client,
+}
+
+impl GroupBy {
+    /// Cycle to the next group-by mode.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Model => Self::ModelClient,
+            Self::ModelClient => Self::Client,
+            Self::Client => Self::Model,
+        }
+    }
+
+    /// Short label for display.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::ModelClient => "model+client",
+            Self::Client => "client",
+        }
+    }
+}
+
 // ── Sort order ────────────────────────────────────────────────────────────
 
 /// Sort order for the detail table.
@@ -123,8 +158,8 @@ impl SortOrder {
 pub struct App {
     /// Currently selected detail scope.
     pub scope: Scope,
-    /// Whether to show per-model breakdown or compact rows.
-    pub breakdown: bool,
+    /// How to group rows in the detail table.
+    pub group_by: GroupBy,
     /// Whether history mode is toggled on.
     pub show_history: bool,
     /// Summary cards (always three: today, week, month).
@@ -167,7 +202,7 @@ impl App {
     pub fn new(config: &Config, initial_scope: Scope) -> Self {
         let mut app = Self {
             scope: initial_scope,
-            breakdown: true,
+            group_by: GroupBy::ModelClient,
             show_history: false,
             cards: [
                 CardData {
@@ -284,8 +319,9 @@ impl App {
                 self.recompute_detail();
                 true
             }
-            KeyCode::Char('b') => {
-                self.breakdown = !self.breakdown;
+            KeyCode::Char('g') => {
+                self.group_by = self.group_by.next();
+                self.recompute_detail();
                 true
             }
             KeyCode::Char('h') => {
@@ -299,6 +335,32 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                true
+            }
+            KeyCode::Left => {
+                let new_scope = match self.scope {
+                    Scope::Today | Scope::Week => Scope::Today,
+                    Scope::Month => Scope::Week,
+                };
+                if new_scope != self.scope {
+                    self.scope = new_scope;
+                    self.scroll_offset = 0;
+                    self.view_switched = true;
+                    self.recompute_detail();
+                }
+                true
+            }
+            KeyCode::Right => {
+                let new_scope = match self.scope {
+                    Scope::Today => Scope::Week,
+                    Scope::Week | Scope::Month => Scope::Month,
+                };
+                if new_scope != self.scope {
+                    self.scope = new_scope;
+                    self.scroll_offset = 0;
+                    self.view_switched = true;
+                    self.recompute_detail();
+                }
                 true
             }
             _ => false,
@@ -332,7 +394,15 @@ impl App {
     }
 
     /// Reload all data from the cache and recompute everything.
+    ///
+    /// This first runs an incremental update to re-parse any source files
+    /// whose mtime has changed, then reads the updated cache.
     pub fn refresh_data(&mut self) {
+        // Re-parse changed source files and update the cache in-place.
+        // This ensures we always have fresh data, even if the background
+        // watcher thread failed to start.
+        sync_cache_from_sources(self.config.no_cost);
+
         // Load records from cache. We do a full load (no date filter)
         // so we can compute all three card summaries.
         let records = load_records_from_cache(&self.config);
@@ -397,6 +467,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn recompute_detail(&mut self) {
         let since = self.scope.since();
         let filtered: Vec<Record> = self
@@ -409,17 +480,34 @@ impl App {
         // Aggregate into model-level breakdown for the selected scope
         let summaries = rollup::aggregate_daily(&filtered);
 
-        // Flatten all model usages across all days in the scope
+        // Flatten all model usages across all days in the scope,
+        // grouping by the selected group-by mode.
         let mut model_map: std::collections::HashMap<(String, String), ModelUsage> =
             std::collections::HashMap::new();
 
         for summary in &summaries {
             for mu in &summary.models {
-                let key = (mu.model.clone(), mu.provider.clone());
-                let entry = model_map.entry(key).or_insert_with(|| ModelUsage {
-                    model: mu.model.clone(),
-                    provider: mu.provider.clone(),
-                    ..Default::default()
+                let key = match self.group_by {
+                    GroupBy::Model => (mu.model.clone(), String::new()),
+                    GroupBy::ModelClient => (mu.model.clone(), mu.provider.clone()),
+                    GroupBy::Client => (String::new(), mu.provider.clone()),
+                };
+                let entry = model_map.entry(key).or_insert_with(|| match self.group_by {
+                    GroupBy::Model => ModelUsage {
+                        model: mu.model.clone(),
+                        provider: String::new(),
+                        ..Default::default()
+                    },
+                    GroupBy::ModelClient => ModelUsage {
+                        model: mu.model.clone(),
+                        provider: mu.provider.clone(),
+                        ..Default::default()
+                    },
+                    GroupBy::Client => ModelUsage {
+                        model: String::new(),
+                        provider: mu.provider.clone(),
+                        ..Default::default()
+                    },
                 });
                 entry.input_tokens += mu.input_tokens;
                 entry.output_tokens += mu.output_tokens;
@@ -445,13 +533,18 @@ impl App {
             });
         }
 
-        // Apply current sort order
+        // Apply current sort order (stable sort to prevent shuffling of equal rows)
+        // Always use model name as tiebreaker for deterministic ordering.
         match self.sort_order {
             SortOrder::CostDesc => {
-                models.sort_unstable_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
+                models.sort_by(|a, b| {
+                    b.cost_usd
+                        .total_cmp(&a.cost_usd)
+                        .then_with(|| a.model.cmp(&b.model))
+                });
             }
             SortOrder::TokensDesc => {
-                models.sort_unstable_by(|a, b| {
+                models.sort_by(|a, b| {
                     let ta = a.input_tokens
                         + a.output_tokens
                         + a.cache_read_tokens
@@ -462,14 +555,18 @@ impl App {
                         + b.cache_read_tokens
                         + b.cache_creation_tokens
                         + b.thinking_tokens;
-                    tb.cmp(&ta)
+                    tb.cmp(&ta).then_with(|| a.model.cmp(&b.model))
                 });
             }
             SortOrder::NameAsc => {
-                models.sort_unstable_by(|a, b| a.model.cmp(&b.model));
+                models.sort_by(|a, b| a.model.cmp(&b.model));
             }
             SortOrder::RequestsDesc => {
-                models.sort_unstable_by(|a, b| b.request_count.cmp(&a.request_count));
+                models.sort_by(|a, b| {
+                    b.request_count
+                        .cmp(&a.request_count)
+                        .then_with(|| a.model.cmp(&b.model))
+                });
             }
         }
 
@@ -499,6 +596,54 @@ impl App {
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────
+
+/// Re-parse source files that have changed since the last cache write.
+///
+/// This runs the same incremental update logic as the watcher thread,
+/// ensuring the `SQLite` cache is up-to-date before we read from it.
+fn sync_cache_from_sources(no_cost: bool) {
+    use crate::cache::Cache;
+    use crate::dedup;
+    use crate::source::SourceSet;
+
+    let Ok(cache) = Cache::open() else { return };
+    let registry = SourceSet::new();
+    let cached_mtimes = cache.cached_file_mtimes();
+    let providers = registry.available();
+
+    let mut any_changes = false;
+
+    for provider in &providers {
+        for file in provider.discover_files() {
+            let mtime = crate::cache::file_mtime_secs(&file).unwrap_or(0);
+            let file_key = file.display().to_string();
+            if cached_mtimes.get(&file_key) == Some(&mtime) {
+                continue;
+            }
+            // First changed file — start a transaction
+            if !any_changes {
+                if cache.begin().is_err() {
+                    return;
+                }
+                any_changes = true;
+            }
+            if let Ok(mut entries) = provider.parse_file(&file) {
+                if !no_cost {
+                    if let Ok(engine) = cost::PricingEngine::load(true) {
+                        engine.apply_costs(&mut entries);
+                    }
+                }
+                entries = dedup::deduplicate(entries);
+                let _ = cache.store_file_entries(&file, mtime, &entries);
+            }
+        }
+    }
+
+    if any_changes {
+        let _ = cache.commit();
+        cache.set_last_discovery();
+    }
+}
 
 fn load_records_from_cache(config: &Config) -> Vec<Record> {
     use crate::cache::Cache;
@@ -589,13 +734,15 @@ fn compute_trend(data: &[u64]) -> i8 {
 }
 
 fn format_cost_compact(cost: f64) -> String {
-    if cost == 0.0 {
+    // Round to 4 decimal places to avoid float precision jitter
+    let rounded = (cost * 10_000.0).round() / 10_000.0;
+    if rounded == 0.0 {
         "$0.00".to_string()
-    } else if cost < 0.01 {
-        format!("${cost:.4}")
-    } else if cost >= 100.0 {
-        format!("${cost:.0}")
+    } else if rounded < 0.01 {
+        format!("${rounded:.4}")
+    } else if rounded >= 100.0 {
+        format!("${rounded:.0}")
     } else {
-        format!("${cost:.2}")
+        format!("${rounded:.2}")
     }
 }

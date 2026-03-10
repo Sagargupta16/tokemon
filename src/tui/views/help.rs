@@ -33,20 +33,19 @@ pub fn render(frame: &mut Frame) {
     let inner = block.inner(popup_area);
 
     let bindings = vec![
-        ("t", "Switch to Today view"),
-        ("w", "Switch to This Week view"),
-        ("m", "Switch to This Month view"),
-        ("b", "Toggle Breakdown / Compact"),
-        ("h", "Toggle historical rows"),
-        ("s", "Cycle sort order"),
+        ("t / w / m", "Switch scope (Today/Week/Month)"),
+        ("← / →", "Cycle scope left/right"),
+        ("g", "Cycle group-by (model/client/both)"),
+        ("h", "Toggle historical periods"),
+        ("s", "Cycle sort (cost/tokens/name/reqs)"),
         ("/", "Filter by model/provider"),
-        ("j / ↓", "Scroll down"),
-        ("k / ↑", "Scroll up"),
+        ("j / ↓", "Scroll table down"),
+        ("k / ↑", "Scroll table up"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit (or clear filter)"),
         ("", ""),
-        ("", "Data refreshes automatically when"),
-        ("", "source files change on disk."),
+        ("", "Data refreshes every 2 seconds and"),
+        ("", "when source files change on disk."),
     ];
 
     let lines: Vec<Line> = bindings

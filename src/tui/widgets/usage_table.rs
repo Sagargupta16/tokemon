@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::display;
@@ -93,8 +93,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             );
             rows.push(Row::new(period_cells).height(1));
 
-            // Model sub-rows (if breakdown mode)
-            if app.breakdown {
+            // Model sub-rows under each period header
+            {
                 for mu in &summary.models {
                     let model_total = mu.input_tokens
                         + mu.output_tokens
@@ -117,17 +117,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }
         }
     } else {
-        // Normal mode: flat model list for the scope
+        // Normal mode: flat list for the scope
         for mu in &app.detail_models {
             let total = mu.input_tokens
                 + mu.output_tokens
                 + mu.cache_read_tokens
                 + mu.cache_creation_tokens
                 + mu.thinking_tokens;
+
+            // Columns depend on group-by mode
+            let (name_col, api_col, client_col) = match app.group_by {
+                crate::tui::app::GroupBy::Model => (
+                    display::display_model(&mu.model),
+                    display::infer_api_provider(&mu.model),
+                    String::new(),
+                ),
+                crate::tui::app::GroupBy::ModelClient => (
+                    display::display_model(&mu.model),
+                    display::infer_api_provider(&mu.model),
+                    display::display_client(&mu.provider),
+                ),
+                crate::tui::app::GroupBy::Client => (
+                    display::display_client(&mu.provider),
+                    String::new(),
+                    String::new(),
+                ),
+            };
+
             let cells = cols.build_row(
-                &display::display_model(&mu.model),
-                &display::infer_api_provider(&mu.model),
-                &display::display_client(&mu.provider),
+                &name_col,
+                &api_col,
+                &client_col,
                 mu.input_tokens,
                 mu.output_tokens,
                 total,
@@ -143,11 +163,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let total_cells = cols.build_total_row(app.detail_total_tokens, app.detail_total_cost);
     rows.push(Row::new(total_cells).height(1));
 
+    let row_count = rows.len();
     let table = Table::new(rows, cols.widths())
         .header(header)
         .row_highlight_style(theme::text().add_modifier(Modifier::REVERSED));
 
-    frame.render_widget(table, inner);
+    // Apply scroll offset via TableState
+    let offset = app.scroll_offset as usize;
+    let mut table_state =
+        TableState::default().with_offset(offset.min(row_count.saturating_sub(1)));
+    frame.render_stateful_widget(table, inner, &mut table_state);
+
+    // Clamp scroll_offset if it exceeds available rows (borrow after rendering)
+    // This is a visual-only clamp; actual state clamping happens in app.rs
 }
 
 // ── Column management ─────────────────────────────────────────────────────
@@ -328,11 +356,14 @@ fn choose_columns(width: usize) -> ColumnSet {
 }
 
 fn format_cost(cost: f64) -> String {
-    if cost == 0.0 {
+    // Round to 4 decimal places to avoid float precision jitter
+    // that causes flickering between format thresholds.
+    let rounded = (cost * 10_000.0).round() / 10_000.0;
+    if rounded == 0.0 {
         "$0.00".to_string()
-    } else if cost < 0.01 {
-        format!("${cost:.4}")
+    } else if rounded < 0.01 {
+        format!("${rounded:.4}")
     } else {
-        format!("${cost:.2}")
+        format!("${rounded:.2}")
     }
 }

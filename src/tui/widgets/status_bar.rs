@@ -37,17 +37,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let sort_label = format!("sort:{}", app.sort_order.label());
+    let group_label = format!("group:{}", app.group_by.label());
     let bindings: Vec<(&str, &str)> = vec![
-        ("t", "today"),
-        ("w", "week"),
-        ("m", "month"),
-        ("b", "breakdown"),
+        ("t/w/m", "scope"),
+        ("←/→", "scope"),
+        ("g", &group_label),
         ("h", "history"),
-        ("/", "filter"),
         ("s", &sort_label),
+        ("/", "filter"),
         ("j/k", "scroll"),
-        ("q", "quit"),
         ("?", "help"),
+        ("q", "quit"),
     ];
 
     for (i, (key, desc)) in bindings.iter().enumerate() {
