@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use chrono::{Datelike, NaiveDate, Timelike, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Timelike, Utc};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::Config;
@@ -465,8 +465,8 @@ pub struct App {
     pub group_by: GroupBy,
     /// Whether history mode is toggled on.
     pub show_history: bool,
-    /// Summary cards (always three: today, week, month).
-    pub cards: [CardData; 3],
+    /// Summary cards: Today, This Week, This Month, All Time.
+    pub cards: [CardData; 4],
     /// Detail table rows for the selected scope.
     pub detail_models: Vec<ModelUsage>,
     /// Detail totals.
@@ -519,6 +519,17 @@ pub struct App {
     /// populates `prev_models` but does NOT trigger highlights,
     /// preventing the "everything flashes" effect on startup.
     initial_load_done: bool,
+    /// Base all-time cost for records older than the in-memory window.
+    /// Computed once at startup.
+    all_time_base_cost: f64,
+    /// Base all-time token count for records older than the in-memory window.
+    all_time_base_tokens: u64,
+    /// Weekly sparkline bars for historical records (before in-memory window).
+    /// Each element is a token count for one ISO week, in chronological order.
+    all_time_base_sparkline: Vec<u64>,
+    /// ISO (year, week) of the first bar in `all_time_base_sparkline`.
+    /// Used to align with current-window bars when merging.
+    all_time_base_start_week: Option<(i32, u32)>,
 }
 
 impl App {
@@ -550,6 +561,13 @@ impl App {
                     sparkline: Vec::new(),
                     trend: 0,
                 },
+                CardData {
+                    label: "All Time",
+                    cost: 0.0,
+                    tokens: 0,
+                    sparkline: Vec::new(),
+                    trend: 0,
+                },
             ],
             detail_models: Vec::new(),
             detail_total_cost: 0.0,
@@ -574,11 +592,18 @@ impl App {
             cached_records: Vec::new(),
             prev_models: Vec::new(),
             initial_load_done: false,
+            all_time_base_cost: 0.0,
+            all_time_base_tokens: 0,
+            all_time_base_sparkline: Vec::new(),
+            all_time_base_start_week: None,
         };
         // Load pricing engine once (offline to avoid blocking).
         if !config.no_cost {
             app.pricing = cost::PricingEngine::load(true).ok();
         }
+        // Compute all-time base from historical records (before the
+        // in-memory window). This runs once at startup.
+        app.compute_all_time_base();
         // Initial data load: sync sources then read cache.
         app.poll_sources();
         app.reload_from_cache();
@@ -892,6 +917,40 @@ impl App {
         }
     }
 
+    /// Load all records older than the in-memory window, apply pricing,
+    /// and compute base totals and weekly sparkline for the All Time card.
+    /// Called once at startup.
+    fn compute_all_time_base(&mut self) {
+        let cutoff = Scope::Month.since() - Duration::days(30);
+        let Some(cutoff_pred) = cutoff.pred_opt() else {
+            return;
+        };
+
+        let Ok(cache) = cache::Cache::open() else {
+            return;
+        };
+        let mut historical = cache
+            .load_entries_filtered(None, Some(cutoff_pred), &[])
+            .unwrap_or_default();
+
+        if historical.is_empty() {
+            return;
+        }
+
+        // Apply pricing to historical records.
+        if let Some(engine) = self.pricing.as_ref() {
+            engine.apply_costs(&mut historical);
+        }
+
+        self.all_time_base_cost = historical.iter().map(|r| r.cost_usd.unwrap_or(0.0)).sum();
+        self.all_time_base_tokens = historical.iter().map(|r| r.total_tokens()).sum();
+
+        // Build weekly sparkline from historical records.
+        let (sparkline, start_week) = build_weekly_sparkline_data(&historical);
+        self.all_time_base_sparkline = sparkline;
+        self.all_time_base_start_week = start_week;
+    }
+
     /// Poll source files for mtime changes, re-parse any that changed,
     /// and write the results to the cache in a single transaction.
     ///
@@ -1045,8 +1104,8 @@ impl App {
         self.cards[1].cost = sum_cost(&week_records);
         self.cards[1].tokens = sum_tokens(&week_records);
 
-        // Build sparkline: daily totals for the last 7 days
-        self.cards[1].sparkline = build_daily_sparkline(&self.cached_records, 7);
+        // Build sparkline: 4-hour buckets for the week
+        self.cards[1].sparkline = build_4hr_sparkline(&self.cached_records, week_start);
 
         // This month card
         let month_start = Scope::Month.since();
@@ -1058,11 +1117,26 @@ impl App {
         self.cards[2].cost = sum_cost(&month_records);
         self.cards[2].tokens = sum_tokens(&month_records);
 
-        // Build sparkline: daily totals for the last 30 days
-        self.cards[2].sparkline = build_daily_sparkline(&self.cached_records, 30);
+        // Build sparkline: daily buckets for the month
+        self.cards[2].sparkline = build_daily_sparkline(&self.cached_records, month_start);
 
-        // Today sparkline: hourly totals for today
-        self.cards[0].sparkline = build_hourly_sparkline(&self.cached_records);
+        // Today sparkline: 10-minute buckets
+        self.cards[0].sparkline = build_10min_sparkline(&self.cached_records);
+
+        // All Time card: base (historical) + current window
+        let window_cost: f64 = self
+            .cached_records
+            .iter()
+            .map(|r| r.cost_usd.unwrap_or(0.0))
+            .sum();
+        let window_tokens: u64 = self.cached_records.iter().map(|r| r.total_tokens()).sum();
+        self.cards[3].cost = self.all_time_base_cost + window_cost;
+        self.cards[3].tokens = self.all_time_base_tokens + window_tokens;
+        self.cards[3].sparkline = merge_weekly_sparklines(
+            &self.all_time_base_sparkline,
+            self.all_time_base_start_week,
+            &self.cached_records,
+        );
 
         // Compute trends from sparkline data
         for card in &mut self.cards {
@@ -1224,16 +1298,21 @@ fn sum_tokens(records: &[&Record]) -> u64 {
 }
 
 /// Build a sparkline of daily token totals for the last `days` days.
-fn build_daily_sparkline(records: &[Record], days: usize) -> Vec<u64> {
-    let today = Utc::now().date_naive();
-    let mut data = vec![0u64; days];
+/// Build a sparkline of 10-minute token buckets for today.
+/// Produces one bucket per 10-minute slot from midnight to the current time.
+fn build_10min_sparkline(records: &[Record]) -> Vec<u64> {
+    let now = Utc::now();
+    let today = now.date_naive();
+    // Current slot index: (hour * 6) + (minute / 10)
+    let current_slot = (now.hour() * 6 + now.minute() / 10) as usize;
+    let num_slots = current_slot + 1; // include current slot
+    let mut data = vec![0u64; num_slots];
 
     for record in records {
-        let record_date = record.timestamp.date_naive();
-        let day_offset = (today - record_date).num_days();
-        if let Ok(idx) = usize::try_from(day_offset) {
-            if idx < days {
-                data[days - 1 - idx] += record.total_tokens();
+        if record.timestamp.date_naive() == today {
+            let slot = (record.timestamp.hour() * 6 + record.timestamp.minute() / 10) as usize;
+            if slot < num_slots {
+                data[slot] += record.total_tokens();
             }
         }
     }
@@ -1241,17 +1320,169 @@ fn build_daily_sparkline(records: &[Record], days: usize) -> Vec<u64> {
     data
 }
 
-/// Build a sparkline of hourly token totals for today (24 buckets).
-fn build_hourly_sparkline(records: &[Record]) -> Vec<u64> {
-    let today = Utc::now().date_naive();
-    let mut data = vec![0u64; 24];
+/// Build a sparkline of 4-hour token buckets since `since_date`.
+/// Produces one bucket per 4-hour slot from `since_date` midnight to now.
+fn build_4hr_sparkline(records: &[Record], since_date: NaiveDate) -> Vec<u64> {
+    let now = Utc::now();
+    let today = now.date_naive();
+    // Total number of days in the range (inclusive)
+    let total_days = (today - since_date).num_days().max(0) as usize + 1;
+    // 6 slots per day (00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
+    // For the last (current) day, include up to the current slot.
+    let current_slot = (now.hour() / 4) as usize;
+    let num_slots = if total_days > 1 {
+        (total_days - 1) * 6 + current_slot + 1
+    } else {
+        current_slot + 1
+    };
+    let mut data = vec![0u64; num_slots];
 
     for record in records {
-        if record.timestamp.date_naive() == today {
-            let hour = record.timestamp.hour() as usize;
-            if hour < 24 {
-                data[hour] += record.total_tokens();
-            }
+        let rd = record.timestamp.date_naive();
+        if rd < since_date {
+            continue;
+        }
+        let day_offset = (rd - since_date).num_days() as usize;
+        let slot_in_day = (record.timestamp.hour() / 4) as usize;
+        let idx = day_offset * 6 + slot_in_day;
+        if idx < num_slots {
+            data[idx] += record.total_tokens();
+        }
+    }
+
+    data
+}
+
+/// Build a sparkline of daily token buckets since `since_date`.
+fn build_daily_sparkline(records: &[Record], since_date: NaiveDate) -> Vec<u64> {
+    let today = Utc::now().date_naive();
+    let days = (today - since_date).num_days().max(0) as usize + 1;
+    let mut data = vec![0u64; days];
+
+    for record in records {
+        let rd = record.timestamp.date_naive();
+        if rd < since_date {
+            continue;
+        }
+        let idx = (rd - since_date).num_days() as usize;
+        if idx < days {
+            data[idx] += record.total_tokens();
+        }
+    }
+
+    data
+}
+
+/// Build weekly sparkline data from a set of records.
+/// Returns `(sparkline_vec, start_week)` where `start_week` is `Some((iso_year, iso_week))`
+/// of the first bar, or `None` if no records.
+fn build_weekly_sparkline_data(records: &[Record]) -> (Vec<u64>, Option<(i32, u32)>) {
+    if records.is_empty() {
+        return (Vec::new(), None);
+    }
+
+    // Find the range of ISO weeks
+    let first_week = records
+        .iter()
+        .map(|r| r.timestamp.date_naive().iso_week())
+        .min()
+        .unwrap();
+    let last_week = records
+        .iter()
+        .map(|r| r.timestamp.date_naive().iso_week())
+        .max()
+        .unwrap();
+
+    let start_year = records
+        .iter()
+        .map(|r| r.timestamp.date_naive().iso_week())
+        .min()
+        .map(|_| {
+            records
+                .iter()
+                .filter(|r| r.timestamp.date_naive().iso_week() == first_week)
+                .map(|r| r.timestamp.date_naive())
+                .min()
+                .unwrap()
+        })
+        .unwrap();
+
+    let start_yw = (start_year.iso_week().year(), start_year.iso_week().week());
+
+    // Calculate total weeks span
+    let end_date = records
+        .iter()
+        .filter(|r| r.timestamp.date_naive().iso_week() == last_week)
+        .map(|r| r.timestamp.date_naive())
+        .max()
+        .unwrap();
+    let end_yw = (end_date.iso_week().year(), end_date.iso_week().week());
+
+    let total_weeks = iso_week_diff(start_yw, end_yw) + 1;
+    let mut data = vec![0u64; total_weeks];
+
+    for record in records {
+        let rd = record.timestamp.date_naive();
+        let yw = (rd.iso_week().year(), rd.iso_week().week());
+        let idx = iso_week_diff(start_yw, yw);
+        if idx < total_weeks {
+            data[idx] += record.total_tokens();
+        }
+    }
+
+    (data, Some(start_yw))
+}
+
+/// Compute the number of ISO weeks between two (year, week) pairs.
+fn iso_week_diff(start: (i32, u32), end: (i32, u32)) -> usize {
+    // Use NaiveDate to compute the difference in days, then divide by 7.
+    // Monday of each ISO week.
+    let start_date = NaiveDate::from_isoywd_opt(start.0, start.1, chrono::Weekday::Mon)
+        .unwrap_or(NaiveDate::from_ymd_opt(start.0, 1, 1).unwrap());
+    let end_date = NaiveDate::from_isoywd_opt(end.0, end.1, chrono::Weekday::Mon)
+        .unwrap_or(NaiveDate::from_ymd_opt(end.0, 1, 1).unwrap());
+    let days = (end_date - start_date).num_days().max(0);
+    (days / 7) as usize
+}
+
+/// Merge the historical base weekly sparkline with current-window records
+/// into a single weekly sparkline for the All Time card.
+fn merge_weekly_sparklines(
+    base: &[u64],
+    base_start: Option<(i32, u32)>,
+    current_records: &[Record],
+) -> Vec<u64> {
+    let now = Utc::now().date_naive();
+    let now_yw = (now.iso_week().year(), now.iso_week().week());
+
+    if base.is_empty() && current_records.is_empty() {
+        return Vec::new();
+    }
+
+    // If no base, just build from current records
+    if base.is_empty() || base_start.is_none() {
+        let (sparkline, _) = build_weekly_sparkline_data(current_records);
+        return sparkline;
+    }
+
+    let start_yw = base_start.unwrap();
+    let total_weeks = iso_week_diff(start_yw, now_yw) + 1;
+    let mut data = vec![0u64; total_weeks];
+
+    // Copy base data
+    for (i, &val) in base.iter().enumerate() {
+        if i < total_weeks {
+            data[i] = val;
+        }
+    }
+
+    // Add current window records
+    for record in current_records {
+        let rd = record.timestamp.date_naive();
+        let yw = (rd.iso_week().year(), rd.iso_week().week());
+        let idx = iso_week_diff(start_yw, yw);
+        if idx < total_weeks {
+            data[idx] += record.total_tokens();
         }
     }
 
@@ -1265,6 +1496,7 @@ fn compute_trend(data: &[u64]) -> i8 {
         return 0;
     }
     let last = data[data.len() - 1];
+    #[allow(clippy::cast_possible_truncation)]
     let prev_avg = data[..data.len() - 1].iter().sum::<u64>() / (data.len() as u64 - 1).max(1);
     if last > prev_avg.saturating_add(prev_avg / 10) {
         1 // increasing
