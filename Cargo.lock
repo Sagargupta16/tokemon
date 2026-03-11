@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "tokemon"
-version = "0.2.0-alpha.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",

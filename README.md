@@ -40,7 +40,7 @@ Unified token usage tracking across all your AI coding tools. `tokemon top` prov
 
 ```bash
 cargo install tokemon              # latest stable
-cargo install tokemon --version 0.1.0-alpha.1   # specific version
+cargo install tokemon --version 0.2.0   # specific version
 ```
 
 ### Via Homebrew (macOS / Linux)
@@ -57,7 +57,7 @@ Or use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) for automa
 
 ```bash
 cargo binstall tokemon             # latest stable
-cargo binstall tokemon@0.1.0-alpha.1   # specific version
+cargo binstall tokemon@0.2.0       # specific version
 ```
 
 ### From source
@@ -142,7 +142,6 @@ tokemon init
 ```
 
 ```toml
-default_command = "daily"
 default_format = "table"
 breakdown = false
 no_cost = false
