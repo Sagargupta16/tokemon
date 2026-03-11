@@ -35,7 +35,7 @@ mod types;
 use cache::Cache;
 use cli::{Cli, Commands, Frequency};
 use config::Config;
-use pipeline::{load_and_price, resolve_providers};
+use pipeline::load_and_price;
 use source::SourceSet;
 use types::{Report, SessionReport};
 
@@ -70,18 +70,24 @@ fn main() -> anyhow::Result<()> {
 fn cmd_discover() {
     let registry = SourceSet::new();
 
-    let info: Vec<(&str, &str, bool, String, usize)> = registry
+    let info: Vec<crate::types::ProviderInfo> = registry
         .all()
         .iter()
         .map(|p| {
-            let available = p.is_available();
+            let available = !p.discover_files().is_empty();
             let data_dir = p.data_dir().display().to_string();
             let file_count = if available {
                 p.discover_files().len()
             } else {
                 0
             };
-            (p.name(), p.display_name(), available, data_dir, file_count)
+            crate::types::ProviderInfo {
+                name: p.name().to_string(),
+                display_name: p.display_name().to_string(),
+                available,
+                data_dir,
+                file_count,
+            }
         })
         .collect();
 
@@ -125,7 +131,10 @@ fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         Frequency::Weekly => "weekly",
         Frequency::Monthly => "monthly",
     };
-    let entries = load_and_price(cli, config, false, cli.since, cli.until)?;
+    let entries = load_and_price(
+        &pipeline::PipelineOptions::from_cli_config(cli, config),
+        false,
+    )?;
 
     if entries.is_empty() {
         let empty_report = Report {
@@ -147,7 +156,8 @@ fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
             }
         } else {
             println!("No usage data found.");
-            if resolve_providers(cli, config).is_empty() {
+            let pipeline_opts = pipeline::PipelineOptions::from_cli_config(cli, config);
+            if pipeline_opts.providers.is_empty() {
                 println!("Run `tokemon discover` to see which providers are available.");
             }
         }
@@ -204,7 +214,13 @@ fn cmd_statusline(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     let freq = cli.frequency;
     let since = frequency_since(freq);
     let effective_since = merge_since(cli.since, Some(since));
-    let entries = load_and_price(cli, config, true, effective_since, cli.until)?;
+    let entries = load_and_price(
+        &pipeline::PipelineOptions {
+            since: effective_since,
+            ..pipeline::PipelineOptions::from_cli_config(cli, config)
+        },
+        true,
+    )?;
     let period_label = match freq {
         Frequency::Daily => "today",
         Frequency::Weekly => "this week",
@@ -254,14 +270,20 @@ fn cmd_statusline(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 }
 
 fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
-    let entries = load_and_price(cli, config, false, cli.since, cli.until)?;
+    let entries = load_and_price(
+        &pipeline::PipelineOptions::from_cli_config(cli, config),
+        false,
+    )?;
     let status = pacemaker::evaluate(&entries, &config.budget);
     render::print_budget(&status);
     Ok(())
 }
 
 fn cmd_sessions(cli: &Cli, config: &Config, top: usize) -> anyhow::Result<()> {
-    let entries = load_and_price(cli, config, false, cli.since, cli.until)?;
+    let entries = load_and_price(
+        &pipeline::PipelineOptions::from_cli_config(cli, config),
+        false,
+    )?;
 
     if entries.is_empty() {
         let empty_report = SessionReport {
