@@ -1,4 +1,17 @@
-use chrono::{Datelike, NaiveDate, Utc};
+// Pedantic lint suppressions — see lib.rs for rationale.
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::struct_excessive_bools,
+    clippy::struct_field_names,
+    clippy::doc_markdown
+)]
+
+use chrono::{NaiveDate, Utc};
 use clap::Parser;
 
 mod cache;
@@ -11,6 +24,7 @@ mod error;
 mod mcp;
 mod pacemaker;
 mod paths;
+mod pipeline;
 mod render;
 mod rollup;
 mod source;
@@ -21,10 +35,9 @@ mod types;
 use cache::Cache;
 use cli::{Cli, Commands, Frequency};
 use config::Config;
+use pipeline::{load_and_price, resolve_providers};
 use source::SourceSet;
 use types::{Report, SessionReport};
-
-const REDISCOVERY_INTERVAL_SECS: u64 = 30;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -32,7 +45,10 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command.as_ref() {
         None => cmd_report(&cli, &config),
-        Some(Commands::Discover) => cmd_discover(),
+        Some(Commands::Discover) => {
+            cmd_discover();
+            Ok(())
+        }
         Some(Commands::Init) => cmd_init(),
         Some(Commands::Statusline) => cmd_statusline(&cli, &config),
         Some(Commands::Budget) => cmd_budget(&cli, &config),
@@ -51,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn cmd_discover() -> anyhow::Result<()> {
+fn cmd_discover() {
     let registry = SourceSet::new();
 
     let info: Vec<(&str, &str, bool, String, usize)> = registry
@@ -70,7 +86,6 @@ fn cmd_discover() -> anyhow::Result<()> {
         .collect();
 
     render::print_discover(&info);
-    Ok(())
 }
 
 fn cmd_init() -> anyhow::Result<()> {
@@ -82,26 +97,13 @@ fn cmd_init() -> anyhow::Result<()> {
 
 // --- Shared helpers for command handlers ---
 
-fn resolve_providers<'a>(cli: &'a Cli, config: &'a Config) -> &'a [String] {
-    if cli.providers.is_empty() {
-        &config.providers
-    } else {
-        &cli.providers
-    }
-}
-
 /// Compute the start date for a given frequency.
 #[must_use]
 fn frequency_since(freq: Frequency) -> NaiveDate {
-    let today = Utc::now().date_naive();
     match freq {
-        Frequency::Daily => today,
-        Frequency::Weekly => {
-            today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
-        }
-        Frequency::Monthly => {
-            NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today)
-        }
+        Frequency::Daily => timestamp::start_of_today(),
+        Frequency::Weekly => timestamp::start_of_week(),
+        Frequency::Monthly => timestamp::start_of_month(),
     }
 }
 
@@ -114,41 +116,6 @@ fn merge_since(a: Option<NaiveDate>, b: Option<NaiveDate>) -> Option<NaiveDate> 
     }
 }
 
-pub(crate) fn load_and_price(
-    cli: &Cli,
-    config: &Config,
-    force_offline: bool,
-    since: Option<NaiveDate>,
-    until: Option<NaiveDate>,
-) -> anyhow::Result<Vec<types::Record>> {
-    let registry = SourceSet::new();
-    let filter = resolve_providers(cli, config);
-    let force_refresh = cli.refresh || config.refresh;
-    let force_reparse = cli.reparse || config.reparse;
-    let mut entries = parse_with_cache(
-        &registry,
-        filter,
-        force_refresh,
-        force_reparse,
-        since,
-        until,
-    )?;
-
-    if !(cli.no_cost || config.no_cost) {
-        let offline = force_offline || cli.offline || config.offline;
-        match cost::PricingEngine::load(offline) {
-            Ok(engine) => engine.apply_costs(&mut entries),
-            Err(e) => {
-                if !force_offline {
-                    eprintln!("[tokemon] Warning: pricing unavailable: {}", e);
-                }
-            }
-        }
-    }
-
-    Ok(entries)
-}
-
 // --- Command handlers ---
 
 fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
@@ -158,7 +125,7 @@ fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         Frequency::Weekly => "weekly",
         Frequency::Monthly => "monthly",
     };
-    let mut entries = load_and_price(cli, config, false, cli.since, cli.until)?;
+    let entries = load_and_price(cli, config, false, cli.since, cli.until)?;
 
     if entries.is_empty() {
         let empty_report = Report {
@@ -187,15 +154,12 @@ fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    entries = rollup::filter_by_date(entries, cli.since, cli.until);
-
-    let mut providers_found: Vec<String> = entries
+    let providers_found: Vec<String> = entries
         .iter()
         .map(|e| e.provider.to_string())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    providers_found.sort_unstable();
 
     let mut summaries = match freq {
         Frequency::Weekly => rollup::aggregate_weekly(&entries),
@@ -208,7 +172,7 @@ fn cmd_report(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     }
 
     let total_cost: f64 = summaries.iter().map(|s| s.total_cost).sum();
-    let total_tokens: u64 = entries.iter().map(|e| e.total_tokens()).sum();
+    let total_tokens: u64 = entries.iter().map(types::Record::total_tokens).sum();
 
     let report = Report {
         period: period.to_string(),
@@ -262,11 +226,13 @@ fn cmd_statusline(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         || config.budget.weekly.is_some()
         || config.budget.monthly.is_some()
     {
-        let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
+        let status = pacemaker::evaluate(&entries, &config.budget);
         match freq {
-            Frequency::Daily => daily.map(|(s, l)| format_budget_short(s, l)),
-            Frequency::Weekly => weekly.map(|(s, l)| format_budget_short(s, l)),
-            Frequency::Monthly => monthly.map(|(s, l)| format_budget_short(s, l)),
+            Frequency::Daily => status.daily.map(|b| format_budget_short(b.spent, b.limit)),
+            Frequency::Weekly => status.weekly.map(|b| format_budget_short(b.spent, b.limit)),
+            Frequency::Monthly => status
+                .monthly
+                .map(|b| format_budget_short(b.spent, b.limit)),
         }
     } else {
         None
@@ -289,8 +255,8 @@ fn cmd_statusline(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
 fn cmd_budget(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     let entries = load_and_price(cli, config, false, cli.since, cli.until)?;
-    let (daily, weekly, monthly) = pacemaker::evaluate(&entries, &config.budget);
-    render::print_budget(daily, weekly, monthly);
+    let status = pacemaker::evaluate(&entries, &config.budget);
+    render::print_budget(&status);
     Ok(())
 }
 
@@ -314,7 +280,6 @@ fn cmd_sessions(cli: &Cli, config: &Config, top: usize) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let entries = rollup::filter_by_date(entries, cli.since, cli.until);
     let mut sessions = rollup::aggregate_by_session(&entries);
     sessions.truncate(top);
 
@@ -342,10 +307,7 @@ fn cmd_sessions(cli: &Cli, config: &Config, top: usize) -> anyhow::Result<()> {
 fn cmd_prune(before: NaiveDate) -> anyhow::Result<()> {
     let cache = Cache::open()?;
     let deleted = cache.prune_before(before)?;
-    println!(
-        "Pruned {} preserved entries with timestamps before {}.",
-        deleted, before
-    );
+    println!("Pruned {deleted} preserved entries with timestamps before {before}.");
     Ok(())
 }
 
@@ -358,9 +320,9 @@ fn format_budget_short(spent: f64, limit: f64) -> String {
         0.0
     };
     if pct > 100.0 {
-        format!("OVER ${:.0} limit", limit)
+        format!("OVER ${limit:.0} limit")
     } else {
-        format!("{:.0}%", pct)
+        format!("{pct:.0}%")
     }
 }
 
@@ -368,182 +330,6 @@ fn format_provider_count(count: usize) -> String {
     if count == 1 {
         "1 provider".to_string()
     } else {
-        format!("{} providers", count)
+        format!("{count} providers")
     }
-}
-
-// --- Cache-aware parsing ---
-
-/// Parse entries using cache. Strategy:
-/// 1. Get all cached (file, mtime) pairs in one query
-/// 2. Discover provider files and check which have changed
-/// 3. Only parse changed files, store results in cache
-/// 4. Load everything from cache in one bulk query
-fn parse_with_cache(
-    registry: &SourceSet,
-    filter: &[String],
-    force_refresh: bool,
-    force_reparse: bool,
-    since: Option<NaiveDate>,
-    until: Option<NaiveDate>,
-) -> anyhow::Result<Vec<types::Record>> {
-    let mut cache = match Cache::open() {
-        Ok(c) => Some(c),
-        Err(e) => {
-            eprintln!(
-                "[tokemon] Warning: cache unavailable ({}); parsing all files",
-                e
-            );
-            None
-        }
-    };
-
-    let providers = resolve_source_refs(registry, filter)?;
-
-    let Some(ref mut cache) = cache else {
-        return parse_all_directly(&providers);
-    };
-
-    let has_filters = since.is_some() || until.is_some() || !filter.is_empty();
-
-    // If cache is fresh and no --refresh/--reparse flag, skip discovery entirely
-    if !force_refresh && !force_reparse && !cache.should_rediscover(REDISCOVERY_INTERVAL_SECS) {
-        let mut entries = if has_filters {
-            cache.load_entries_filtered(since, until, filter)?
-        } else {
-            cache.load_all_entries()?
-        };
-        // Dedup is handled inside load_all_entries / load_entries_filtered.
-        entries.sort_by_key(|e| e.timestamp);
-        return Ok(entries);
-    }
-
-    // When --reparse, ignore cached mtimes so every file gets re-parsed
-    let cached_mtimes = if force_reparse {
-        std::collections::HashMap::new()
-    } else {
-        cache.cached_file_mtimes().unwrap_or_default()
-    };
-
-    // Discover all files and collect their paths for preservation tracking
-    let all_discovered: Vec<(&dyn source::Source, std::path::PathBuf)> = providers
-        .iter()
-        .flat_map(|provider| {
-            provider
-                .discover_files()
-                .into_iter()
-                .map(move |file| (*provider, file))
-        })
-        .collect();
-
-    let discovered_files: std::collections::HashSet<String> = all_discovered
-        .iter()
-        .map(|(_, file)| file.display().to_string())
-        .collect();
-
-    // Mark entries from deleted files as preserved (only when discovering all providers,
-    // otherwise we'd incorrectly mark entries from non-filtered providers)
-    if filter.is_empty() {
-        cache.mark_preserved(&discovered_files);
-    }
-
-    // Find files that need (re)parsing.
-    // Use WAL-aware mtime for .db files so we detect SQLite WAL writes.
-    let files_to_parse: Vec<_> = all_discovered
-        .into_iter()
-        .filter_map(|(provider, file)| {
-            let mtime = cache::file_mtime_secs_for_db(&file).unwrap_or(0);
-            let file_key = file.display().to_string();
-            if cached_mtimes.get(&file_key) == Some(&mtime) {
-                None
-            } else {
-                Some((provider, file, mtime))
-            }
-        })
-        .collect();
-
-    // Parse changed files in parallel, then store in a single transaction
-    if !files_to_parse.is_empty() {
-        use rayon::prelude::*;
-
-        // Parse in parallel
-        let parsed: Vec<_> = files_to_parse
-            .par_iter()
-            .filter_map(|(provider, file, mtime)| match provider.parse_file(file) {
-                Ok(entries) => Some((file.as_path(), *mtime, entries)),
-                Err(e) => {
-                    eprintln!(
-                        "[tokemon] Warning: failed to parse {}: {}",
-                        file.display(),
-                        e
-                    );
-                    None
-                }
-            })
-            .collect();
-
-        // Write all parsed results in a single transaction
-        if !parsed.is_empty() {
-            match cache.write_entries(&parsed) {
-                Ok(n) => {
-                    if n == 0 {
-                        eprintln!("[tokemon] Warning: parsed files but wrote 0 entries to cache");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[tokemon] Warning: cache write failed: {}", e);
-                    // Fall through — we'll still load whatever is in the cache
-                }
-            }
-        }
-    } else {
-        // No files changed, but update the discovery timestamp so we
-        // don't re-discover on the next invocation within the interval.
-        if let Err(e) = cache.set_last_discovery() {
-            eprintln!(
-                "[tokemon] Warning: failed to update discovery timestamp: {}",
-                e
-            );
-        }
-    }
-
-    let mut entries = if has_filters {
-        cache.load_entries_filtered(since, until, filter)?
-    } else {
-        cache.load_all_entries()?
-    };
-    // Dedup is handled inside load_all_entries / load_entries_filtered.
-    entries.sort_by_key(|e| e.timestamp);
-    Ok(entries)
-}
-
-fn resolve_source_refs<'a>(
-    registry: &'a SourceSet,
-    filter: &[String],
-) -> anyhow::Result<Vec<&'a dyn source::Source>> {
-    if filter.is_empty() {
-        return Ok(registry.available());
-    }
-
-    filter
-        .iter()
-        .map(|name| {
-            registry
-                .get(name)
-                .ok_or_else(|| error::TokemonError::ProviderNotFound(name.clone()).into())
-        })
-        .collect()
-}
-
-fn parse_all_directly(providers: &[&dyn source::Source]) -> anyhow::Result<Vec<types::Record>> {
-    let mut entries = Vec::new();
-    for provider in providers {
-        match provider.parse_all() {
-            Ok(e) => entries.extend(e),
-            Err(e) => eprintln!("[tokemon] Warning: {}: {}", provider.name(), e),
-        }
-    }
-    entries = dedup::deduplicate(entries);
-    entries.sort_by_key(|e| e.timestamp);
-    Ok(entries)
 }

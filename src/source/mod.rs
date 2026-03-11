@@ -29,10 +29,10 @@ use crate::types::Record;
 
 pub trait Source: Send + Sync {
     /// Short identifier: "claude-code", "codex", "gemini"
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Human-readable: "Claude Code", "Codex CLI", "Gemini CLI"
-    fn display_name(&self) -> &str;
+    fn display_name(&self) -> &'static str;
 
     /// Return the base data directory for display purposes
     fn data_dir(&self) -> PathBuf;
@@ -48,7 +48,11 @@ pub trait Source: Send + Sync {
         !self.discover_files().is_empty()
     }
 
-    /// Parse all files in parallel with dedup
+    /// Parse all files in parallel with dedup.
+    ///
+    /// Handles individual file errors by logging a warning and continuing.
+    /// Returns a `Result` only for fatal, unrecoverable errors (none currently
+    /// implemented by the default).
     fn parse_all(&self) -> Result<Vec<Record>> {
         let files = self.discover_files();
         let all: Vec<Record> = files
@@ -102,18 +106,21 @@ impl SourceSet {
         self.providers
             .iter()
             .filter(|p| p.is_available())
-            .map(|p| p.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .collect()
     }
 
     pub fn all(&self) -> Vec<&dyn Source> {
-        self.providers.iter().map(|p| p.as_ref()).collect()
+        self.providers
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Source> {
         self.providers
             .iter()
             .find(|p| p.name() == name)
-            .map(|p| p.as_ref())
+            .map(std::convert::AsRef::as_ref)
     }
 }

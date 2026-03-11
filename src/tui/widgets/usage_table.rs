@@ -80,7 +80,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             // Period summary row
             let total = summary.total_input
                 + summary.total_output
-                + summary.total_cache
+                + summary.total_cache()
                 + summary.total_thinking;
             let period_cells = cols.build_row(
                 &summary.label,
@@ -102,9 +102,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 for mu in &summary.models {
                     let model_total = mu.total_tokens();
                     let sub_cells = cols.build_row(
-                        "",
                         &format!("  {}", display::display_model(&mu.model)),
                         display::infer_api_provider(mu.effective_raw_model()),
+                        "",
                         mu.request_count,
                         mu.input_tokens,
                         mu.output_tokens,
@@ -127,17 +127,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             // Use raw_model for API provider inference (retains routing
             // prefix like "vertexai."), normalized model for display name.
             let (name_col, api_col, client_col) = match app.group_by {
-                crate::tui::app::GroupBy::Model => (
+                crate::types::GroupBy::Model => (
                     display::display_model(&mu.model),
                     display::infer_api_provider(mu.effective_raw_model()).to_string(),
                     String::new(),
                 ),
-                crate::tui::app::GroupBy::ModelClient => (
+                crate::types::GroupBy::ModelClient => (
                     display::display_model(&mu.model),
                     display::infer_api_provider(mu.effective_raw_model()).to_string(),
                     display::display_client(&mu.provider).into_owned(),
                 ),
-                crate::tui::app::GroupBy::Client => (
+                crate::types::GroupBy::Client => (
                     display::display_client(&mu.provider).into_owned(),
                     String::new(),
                     String::new(),

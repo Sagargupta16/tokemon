@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use chrono::{Datelike, Duration, NaiveDate, Timelike, Utc};
+use crate::timestamp;
+use chrono::{Duration, NaiveDate, Utc};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::Config;
 use crate::render::{self, format_tokens_short};
 use crate::source::SourceSet;
-use crate::types::{DailySummary, ModelUsage, Record};
+use crate::types::{GroupBy, ModelUsage, PeriodSummary, Record};
 use crate::{cache, cost, dedup, rollup};
 
 use super::diff::{self, RowKey};
@@ -44,13 +45,10 @@ impl Scope {
     /// Return the start date for this scope.
     #[must_use]
     pub fn since(self) -> NaiveDate {
-        let today = Utc::now().date_naive();
         match self {
-            Self::Today => today,
-            Self::Week => {
-                today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()))
-            }
-            Self::Month => NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today),
+            Self::Today => timestamp::start_of_today(),
+            Self::Week => timestamp::start_of_week(),
+            Self::Month => timestamp::start_of_month(),
             Self::AllTime => NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
         }
     }
@@ -87,41 +85,6 @@ impl CardData {
             std::cmp::Ordering::Greater => "↑",
             std::cmp::Ordering::Less => "↓",
             std::cmp::Ordering::Equal => "−",
-        }
-    }
-}
-
-// ── Group-by mode ─────────────────────────────────────────────────────────
-
-/// How to group rows in the detail table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupBy {
-    /// One row per model (aggregated across all clients).
-    Model,
-    /// One row per model+client combination.
-    ModelClient,
-    /// One row per client (aggregated across all models).
-    Client,
-}
-
-impl GroupBy {
-    /// Cycle to the next group-by mode.
-    #[must_use]
-    pub fn next(self) -> Self {
-        match self {
-            Self::Model => Self::ModelClient,
-            Self::ModelClient => Self::Client,
-            Self::Client => Self::Model,
-        }
-    }
-
-    /// Short label for display.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Model => "model",
-            Self::ModelClient => "model+client",
-            Self::Client => "client",
         }
     }
 }
@@ -165,321 +128,12 @@ impl SortOrder {
     }
 }
 
-// ── Settings state ────────────────────────────────────────────────────────
-
-/// Which field is being displayed/edited in the settings view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingField {
-    TickInterval,
-    NoCost,
-    DefaultCommand,
-    SortOrder,
-    ShowSparklines,
-    SparklineMetric,
-    TodayBucketMins,
-    WeekBucketHours,
-    MonthBucketDays,
-    BudgetDaily,
-    BudgetWeekly,
-    BudgetMonthly,
-    ColApiProvider,
-    ColClient,
-    ColInput,
-    ColOutput,
-}
-
-impl SettingField {
-    /// Total number of settings fields.
-    pub const COUNT: usize = 16;
-
-    /// All fields in display order.
-    pub const ALL: [Self; Self::COUNT] = [
-        Self::TickInterval,
-        Self::NoCost,
-        Self::DefaultCommand,
-        Self::SortOrder,
-        Self::ShowSparklines,
-        Self::SparklineMetric,
-        Self::TodayBucketMins,
-        Self::WeekBucketHours,
-        Self::MonthBucketDays,
-        Self::BudgetDaily,
-        Self::BudgetWeekly,
-        Self::BudgetMonthly,
-        Self::ColApiProvider,
-        Self::ColClient,
-        Self::ColInput,
-        Self::ColOutput,
-    ];
-
-    /// Display label for this field.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::TickInterval => "Tick Interval (s) *",
-            Self::NoCost => "Disable Costs",
-            Self::DefaultCommand => "Default Command",
-            Self::SortOrder => "Sort Order",
-            Self::ShowSparklines => "Show Sparklines",
-            Self::SparklineMetric => "Sparkline Metric",
-            Self::TodayBucketMins => "Today Bar (mins)",
-            Self::WeekBucketHours => "Week Bar (hours)",
-            Self::MonthBucketDays => "Month Bar (days)",
-            Self::BudgetDaily => "Daily Budget ($)",
-            Self::BudgetWeekly => "Weekly Budget ($)",
-            Self::BudgetMonthly => "Monthly Budget ($)",
-            Self::ColApiProvider => "API Provider",
-            Self::ColClient => "Client",
-            Self::ColInput => "Input Tokens",
-            Self::ColOutput => "Output Tokens",
-        }
-    }
-
-    /// Section header for visual grouping (returns Some for the first item in each section).
-    #[must_use]
-    pub fn section_header(self) -> Option<&'static str> {
-        match self {
-            Self::TickInterval => Some("General"),
-            Self::ShowSparklines => Some("Sparklines"),
-            Self::BudgetDaily => Some("Budget Limits"),
-            Self::ColApiProvider => Some("Columns"),
-            _ => None,
-        }
-    }
-
-    /// Whether this field is a boolean toggle.
-    #[must_use]
-    pub fn is_bool(self) -> bool {
-        matches!(
-            self,
-            Self::NoCost
-                | Self::ShowSparklines
-                | Self::ColApiProvider
-                | Self::ColClient
-                | Self::ColInput
-                | Self::ColOutput
-        )
-    }
-
-    /// Whether this field is an enum that cycles through values.
-    #[must_use]
-    pub fn is_enum(self) -> bool {
-        matches!(
-            self,
-            Self::DefaultCommand | Self::SortOrder | Self::SparklineMetric
-        )
-    }
-
-    /// Get the current value as a display string from a config.
-    #[must_use]
-    pub fn display_value(self, config: &Config) -> String {
-        match self {
-            Self::TickInterval => {
-                let v = config.tick_interval;
-                if v == 0 {
-                    "2 (default)".to_string()
-                } else {
-                    v.to_string()
-                }
-            }
-            Self::NoCost => if config.no_cost { "Yes" } else { "No" }.to_string(),
-            Self::DefaultCommand => config.default_command.clone(),
-            Self::SortOrder => config.sort_order.clone(),
-            Self::ShowSparklines => if config.show_sparklines { "Yes" } else { "No" }.to_string(),
-            Self::SparklineMetric => config.sparkline_metric.clone(),
-            Self::TodayBucketMins => config.today_bucket_mins.to_string(),
-            Self::WeekBucketHours => config.week_bucket_hours.to_string(),
-            Self::MonthBucketDays => config.month_bucket_days.to_string(),
-            Self::BudgetDaily => config
-                .budget
-                .daily
-                .map_or("--".to_string(), |v| format!("{v:.2}")),
-            Self::BudgetWeekly => config
-                .budget
-                .weekly
-                .map_or("--".to_string(), |v| format!("{v:.2}")),
-            Self::BudgetMonthly => config
-                .budget
-                .monthly
-                .map_or("--".to_string(), |v| format!("{v:.2}")),
-            Self::ColApiProvider => bool_display(config.columns.api_provider),
-            Self::ColClient => bool_display(config.columns.client),
-            Self::ColInput => bool_display(config.columns.input),
-            Self::ColOutput => bool_display(config.columns.output),
-        }
-    }
-
-    /// Toggle a boolean field on the given config. No-op for non-bool fields.
-    pub fn toggle_bool(self, config: &mut Config) {
-        match self {
-            Self::NoCost => config.no_cost = !config.no_cost,
-            Self::ShowSparklines => config.show_sparklines = !config.show_sparklines,
-            Self::ColApiProvider => config.columns.api_provider = !config.columns.api_provider,
-            Self::ColClient => config.columns.client = !config.columns.client,
-            Self::ColInput => config.columns.input = !config.columns.input,
-            Self::ColOutput => config.columns.output = !config.columns.output,
-            _ => {}
-        }
-    }
-
-    /// Cycle an enum field to its next value. No-op for non-enum fields.
-    pub fn cycle_enum(self, config: &mut Config) {
-        match self {
-            Self::DefaultCommand => {
-                config.default_command = match config.default_command.as_str() {
-                    "daily" => "weekly".to_string(),
-                    "weekly" => "monthly".to_string(),
-                    _ => "daily".to_string(),
-                };
-            }
-            Self::SortOrder => {
-                config.sort_order = match config.sort_order.as_str() {
-                    "asc" => "desc".to_string(),
-                    _ => "asc".to_string(),
-                };
-            }
-            Self::SparklineMetric => {
-                config.sparkline_metric = match config.sparkline_metric.as_str() {
-                    "tokens" => "cost".to_string(),
-                    _ => "tokens".to_string(),
-                };
-            }
-            _ => {}
-        }
-    }
-
-    /// Apply a string value from the edit buffer to the config.
-    /// Returns `true` if the value was valid and applied.
-    pub fn apply_value(self, config: &mut Config, value: &str) -> bool {
-        match self {
-            Self::TickInterval => {
-                if let Ok(v) = value.parse::<u64>() {
-                    config.tick_interval = v.min(300);
-                    true
-                } else {
-                    false
-                }
-            }
-            Self::TodayBucketMins => {
-                if let Ok(v) = value.parse::<u64>() {
-                    config.today_bucket_mins = v.clamp(1, 60);
-                    true
-                } else {
-                    false
-                }
-            }
-            Self::WeekBucketHours => {
-                if let Ok(v) = value.parse::<u64>() {
-                    config.week_bucket_hours = v.clamp(1, 24);
-                    true
-                } else {
-                    false
-                }
-            }
-            Self::MonthBucketDays => {
-                if let Ok(v) = value.parse::<u64>() {
-                    config.month_bucket_days = v.clamp(1, 7);
-                    true
-                } else {
-                    false
-                }
-            }
-            Self::BudgetDaily => apply_budget_value(&mut config.budget.daily, value),
-            Self::BudgetWeekly => apply_budget_value(&mut config.budget.weekly, value),
-            Self::BudgetMonthly => apply_budget_value(&mut config.budget.monthly, value),
-            _ => false,
-        }
-    }
-
-    /// Get the raw edit value (for pre-populating the edit buffer).
-    #[must_use]
-    pub fn edit_value(self, config: &Config) -> String {
-        match self {
-            Self::TickInterval => config.tick_interval.to_string(),
-            Self::TodayBucketMins => config.today_bucket_mins.to_string(),
-            Self::WeekBucketHours => config.week_bucket_hours.to_string(),
-            Self::MonthBucketDays => config.month_bucket_days.to_string(),
-            Self::BudgetDaily => config
-                .budget
-                .daily
-                .map_or(String::new(), |v| format!("{v:.2}")),
-            Self::BudgetWeekly => config
-                .budget
-                .weekly
-                .map_or(String::new(), |v| format!("{v:.2}")),
-            Self::BudgetMonthly => config
-                .budget
-                .monthly
-                .map_or(String::new(), |v| format!("{v:.2}")),
-            _ => String::new(),
-        }
-    }
-}
-
-fn bool_display(v: bool) -> String {
-    if v { "Yes" } else { "No" }.to_string()
-}
-
-fn apply_budget_value(target: &mut Option<f64>, value: &str) -> bool {
-    if value.is_empty() {
-        *target = None;
-        return true;
-    }
-    if let Ok(v) = value.parse::<f64>() {
-        if v > 0.0 {
-            *target = Some(v);
-        } else {
-            *target = None;
-        }
-        true
-    } else {
-        false
-    }
-}
-
-/// Interactive settings editor state.
-pub struct SettingsState {
-    /// Working copy of config — edits happen here.
-    pub draft: Config,
-    /// Whether the draft differs from the saved config.
-    pub unsaved: bool,
-    /// Currently selected field index.
-    pub selected: usize,
-    /// Whether we're currently editing a text/numeric field.
-    pub editing: bool,
-    /// Text buffer for the field being edited.
-    pub edit_buffer: String,
-    /// Brief confirmation message (e.g. "Saved!"), with the instant it was set.
-    pub flash_message: Option<(String, Instant)>,
-}
-
-impl SettingsState {
-    fn new(config: &Config) -> Self {
-        Self {
-            draft: config.clone(),
-            unsaved: false,
-            selected: 0,
-            editing: false,
-            edit_buffer: String::new(),
-            flash_message: None,
-        }
-    }
-
-    /// The currently selected field.
-    #[must_use]
-    pub fn current_field(&self) -> SettingField {
-        SettingField::ALL[self.selected]
-    }
-
-    /// Check if flash message has expired (>2s).
-    pub fn expire_flash(&mut self) {
-        if let Some((_, t)) = &self.flash_message {
-            if t.elapsed().as_secs_f64() >= 2.0 {
-                self.flash_message = None;
-            }
-        }
-    }
-}
+use super::settings_state::{SettingField, SettingsState};
+use super::sparkline_data::{
+    build_day_sparkline, build_hour_sparkline, build_minute_sparkline, build_weekly_sparkline_data,
+    compute_trend, merge_weekly_sparklines, sum_cost, sum_tokens,
+};
+use crate::rollup::{aggregate_summaries_to_models, merge_model_usages};
 
 // ── App state ─────────────────────────────────────────────────────────────
 
@@ -500,7 +154,7 @@ pub struct App {
     pub detail_total_tokens: u64,
     pub detail_total_requests: u64,
     /// Historical summaries (populated when `show_history` is true).
-    pub history_summaries: Vec<DailySummary>,
+    pub history_summaries: Vec<PeriodSummary>,
     /// Scroll offset for the detail table.
     pub scroll_offset: u16,
     /// Whether the app should quit.
@@ -630,9 +284,18 @@ impl App {
             all_time_base_start_week: None,
             all_time_base_models: Vec::new(),
         };
-        // Load pricing engine once (offline to avoid blocking).
+        // Load pricing engine once. Try offline first (fast path using
+        // cached pricing.json). If the cache doesn't exist yet (fresh
+        // install), fall back to a one-time online fetch.
         if !config.no_cost {
             app.pricing = cost::PricingEngine::load(true).ok();
+            if app
+                .pricing
+                .as_ref()
+                .is_some_and(cost::PricingEngine::is_empty)
+            {
+                app.pricing = cost::PricingEngine::load(false).ok();
+            }
         }
         // Compute all-time base from historical records (before the
         // in-memory window). This runs once at startup.
@@ -751,35 +414,34 @@ impl App {
             }
             KeyCode::Char('t') => {
                 self.scope = Scope::Today;
-                self.scroll_offset = 0;
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Char('w') => {
                 self.scope = Scope::Week;
-                self.scroll_offset = 0;
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Char('m') => {
                 self.scope = Scope::Month;
-                self.scroll_offset = 0;
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Char('a') => {
                 self.scope = Scope::AllTime;
-                self.scroll_offset = 0;
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Char('s') => {
                 self.sort_order = self.sort_order.next();
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Char('g') => {
                 self.group_by = self.group_by.next();
+                self.compute_all_time_base();
+                self.prev_models.clear();
+                self.highlight_map.clear();
                 self.recompute_detail();
                 true
             }
@@ -789,7 +451,8 @@ impl App {
                 true
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                let max = self.detail_models.len().saturating_sub(1) as u16;
+                self.scroll_offset = self.scroll_offset.saturating_add(1).min(max);
                 true
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -798,31 +461,31 @@ impl App {
             }
             KeyCode::Left => {
                 let new_scope = match self.scope {
-                    Scope::Today => Scope::Today,
-                    Scope::Week => Scope::Today,
+                    Scope::Today | Scope::Week => Scope::Today,
                     Scope::Month => Scope::Week,
                     Scope::AllTime => Scope::Month,
                 };
-                if new_scope != self.scope {
+                if new_scope == self.scope {
+                    false
+                } else {
                     self.scope = new_scope;
-                    self.scroll_offset = 0;
-                    self.recompute_detail();
+                    self.reset_view_state();
+                    true
                 }
-                true
             }
             KeyCode::Right => {
                 let new_scope = match self.scope {
                     Scope::Today => Scope::Week,
                     Scope::Week => Scope::Month,
-                    Scope::Month => Scope::AllTime,
-                    Scope::AllTime => Scope::AllTime,
+                    Scope::Month | Scope::AllTime => Scope::AllTime,
                 };
-                if new_scope != self.scope {
+                if new_scope == self.scope {
+                    false
+                } else {
                     self.scope = new_scope;
-                    self.scroll_offset = 0;
-                    self.recompute_detail();
+                    self.reset_view_state();
+                    true
                 }
-                true
             }
             _ => false,
         }
@@ -833,8 +496,7 @@ impl App {
             KeyCode::Enter => {
                 self.filter_active = false;
                 self.applied_filter = self.filter_text.clone();
-                self.scroll_offset = 0;
-                self.recompute_detail();
+                self.reset_view_state();
                 true
             }
             KeyCode::Esc => {
@@ -942,7 +604,7 @@ impl App {
             }
             KeyCode::Char('W') => {
                 // Save to disk
-                let old_metric = self.config.sparkline_metric.clone();
+                let old_metric = self.config.sparkline_metric;
                 match self.settings_state.draft.save() {
                     Ok(()) => {
                         self.config = self.settings_state.draft.clone();
@@ -992,10 +654,13 @@ impl App {
         }
 
         self.all_time_base_cost = historical.iter().map(|r| r.cost_usd.unwrap_or(0.0)).sum();
-        self.all_time_base_tokens = historical.iter().map(|r| r.total_tokens()).sum();
+        self.all_time_base_tokens = historical
+            .iter()
+            .map(super::super::types::Record::total_tokens)
+            .sum();
 
         // Build weekly sparkline from historical records.
-        let use_cost = self.config.sparkline_metric == "cost";
+        let use_cost = self.config.sparkline_metric == crate::config::SparklineMetric::Cost;
         let (sparkline, start_week) = build_weekly_sparkline_data(&historical, use_cost);
         self.all_time_base_sparkline = sparkline;
         self.all_time_base_start_week = start_week;
@@ -1138,7 +803,7 @@ impl App {
 
     fn recompute_cards(&mut self) {
         let today = Utc::now().date_naive();
-        let use_cost = self.config.sparkline_metric == "cost";
+        let use_cost = self.config.sparkline_metric == crate::config::SparklineMetric::Cost;
 
         // Today card
         let today_records: Vec<&Record> = self
@@ -1201,7 +866,11 @@ impl App {
             .iter()
             .map(|r| r.cost_usd.unwrap_or(0.0))
             .sum();
-        let window_tokens: u64 = self.cached_records.iter().map(|r| r.total_tokens()).sum();
+        let window_tokens: u64 = self
+            .cached_records
+            .iter()
+            .map(super::super::types::Record::total_tokens)
+            .sum();
         self.cards[3].cost = self.all_time_base_cost + window_cost;
         self.cards[3].tokens = self.all_time_base_tokens + window_tokens;
         self.cards[3].sparkline = merge_weekly_sparklines(
@@ -1218,6 +887,15 @@ impl App {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// Reset view state when scope/filter/sort/group-by changes.
+    /// Clears highlights and scroll, then recomputes the detail table.
+    fn reset_view_state(&mut self) {
+        self.scroll_offset = 0;
+        self.prev_models.clear();
+        self.highlight_map.clear();
+        self.recompute_detail();
+    }
+
     fn recompute_detail(&mut self) {
         let since = self.scope.since();
         let filtered: Vec<Record> = self
@@ -1280,7 +958,10 @@ impl App {
         }
 
         self.detail_total_cost = models.iter().map(|m| m.cost_usd).sum();
-        self.detail_total_tokens = models.iter().map(|m| m.total_tokens()).sum();
+        self.detail_total_tokens = models
+            .iter()
+            .map(super::super::types::ModelUsage::total_tokens)
+            .sum();
         self.detail_total_requests = models.iter().map(|m| m.request_count).sum();
         self.detail_models = models;
 
@@ -1294,78 +975,6 @@ impl App {
             self.history_summaries.clear();
         }
     }
-}
-
-/// Aggregate `DailySummary` model usages into a flat `Vec<ModelUsage>`
-/// grouped by the selected `GroupBy` mode. Used by both `recompute_detail`
-/// and `compute_all_time_base`.
-fn aggregate_summaries_to_models(summaries: &[DailySummary], group_by: GroupBy) -> Vec<ModelUsage> {
-    let mut model_map: std::collections::HashMap<(String, String), ModelUsage> =
-        std::collections::HashMap::new();
-
-    for summary in summaries {
-        for mu in &summary.models {
-            let key = match group_by {
-                GroupBy::Model => (mu.model.clone(), String::new()),
-                GroupBy::ModelClient => (mu.model.clone(), mu.provider.clone()),
-                GroupBy::Client => (String::new(), mu.provider.clone()),
-            };
-            let entry = model_map.entry(key).or_insert_with(|| match group_by {
-                GroupBy::Model => ModelUsage {
-                    model: mu.model.clone(),
-                    raw_model: mu.model.clone(),
-                    provider: String::new(),
-                    ..Default::default()
-                },
-                GroupBy::ModelClient => ModelUsage {
-                    model: mu.model.clone(),
-                    raw_model: mu.raw_model.clone(),
-                    provider: mu.provider.clone(),
-                    ..Default::default()
-                },
-                GroupBy::Client => ModelUsage {
-                    model: String::new(),
-                    raw_model: String::new(),
-                    provider: mu.provider.clone(),
-                    ..Default::default()
-                },
-            });
-            entry.input_tokens += mu.input_tokens;
-            entry.output_tokens += mu.output_tokens;
-            entry.cache_read_tokens += mu.cache_read_tokens;
-            entry.cache_creation_tokens += mu.cache_creation_tokens;
-            entry.thinking_tokens += mu.thinking_tokens;
-            entry.cost_usd += mu.cost_usd;
-            entry.request_count += mu.request_count;
-        }
-    }
-
-    model_map.into_values().collect()
-}
-
-/// Merge two sets of `ModelUsage` by summing values for matching keys.
-fn merge_model_usages(base: &[ModelUsage], window: &[ModelUsage]) -> Vec<ModelUsage> {
-    let mut map: std::collections::HashMap<(String, String), ModelUsage> =
-        std::collections::HashMap::new();
-
-    for mu in base.iter().chain(window.iter()) {
-        let key = (mu.model.clone(), mu.provider.clone());
-        let entry = map.entry(key).or_insert_with(|| ModelUsage {
-            model: mu.model.clone(),
-            raw_model: mu.raw_model.clone(),
-            provider: mu.provider.clone(),
-            ..Default::default()
-        });
-        entry.input_tokens += mu.input_tokens;
-        entry.output_tokens += mu.output_tokens;
-        entry.cache_read_tokens += mu.cache_read_tokens;
-        entry.cache_creation_tokens += mu.cache_creation_tokens;
-        entry.thinking_tokens += mu.thinking_tokens;
-        entry.cost_usd += mu.cost_usd;
-        entry.request_count += mu.request_count;
-    }
-
-    map.into_values().collect()
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────
@@ -1390,256 +999,4 @@ fn load_records_from_cache(pricing: Option<&cost::PricingEngine>) -> Vec<Record>
     // Dedup is handled inside load_entries_filtered.
     entries.sort_by_key(|e| e.timestamp);
     entries
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-fn sum_cost(records: &[&Record]) -> f64 {
-    records.iter().map(|r| r.cost_usd.unwrap_or(0.0)).sum()
-}
-
-fn sum_tokens(records: &[&Record]) -> u64 {
-    records.iter().map(|r| r.total_tokens()).sum()
-}
-
-/// Extract the sparkline metric value from a record.
-/// For "cost" mode, scales USD to millicents (x100_000) so small values are visible.
-fn sparkline_value(record: &Record, use_cost: bool) -> u64 {
-    if use_cost {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let v = (record.cost_usd.unwrap_or(0.0) * 100_000.0) as u64;
-        v
-    } else {
-        record.total_tokens()
-    }
-}
-
-/// Build a sparkline of 10-minute buckets for today.
-/// Produces one bucket per 10-minute slot from midnight to the current time.
-/// Build a sparkline of N-minute buckets for today.
-/// `bucket_mins` controls granularity (e.g. 1, 5, 10, 30, 60).
-fn build_minute_sparkline(records: &[Record], bucket_mins: u32, use_cost: bool) -> Vec<u64> {
-    let bucket_mins = bucket_mins.max(1);
-    let now = Utc::now();
-    let today = now.date_naive();
-    let total_minutes = now.hour() * 60 + now.minute();
-    let current_slot = (total_minutes / bucket_mins) as usize;
-    let num_slots = current_slot + 1;
-    let mut data = vec![0u64; num_slots];
-
-    for record in records {
-        if record.timestamp.date_naive() == today {
-            let rm = record.timestamp.hour() * 60 + record.timestamp.minute();
-            let slot = (rm / bucket_mins) as usize;
-            if slot < num_slots {
-                data[slot] += sparkline_value(record, use_cost);
-            }
-        }
-    }
-
-    data
-}
-
-/// Build a sparkline of N-hour buckets since `since_date`.
-/// `bucket_hours` controls granularity (e.g. 1, 2, 4, 6, 12, 24).
-fn build_hour_sparkline(
-    records: &[Record],
-    since_date: NaiveDate,
-    bucket_hours: u32,
-    use_cost: bool,
-) -> Vec<u64> {
-    let bucket_hours = bucket_hours.max(1);
-    let slots_per_day = (24 + bucket_hours - 1) / bucket_hours; // ceil(24/bucket_hours)
-    let now = Utc::now();
-    let today = now.date_naive();
-    let total_days = (today - since_date).num_days().max(0) as usize + 1;
-    let current_slot = (now.hour() / bucket_hours) as usize;
-    let num_slots = if total_days > 1 {
-        (total_days - 1) * slots_per_day as usize + current_slot + 1
-    } else {
-        current_slot + 1
-    };
-    let mut data = vec![0u64; num_slots];
-
-    for record in records {
-        let rd = record.timestamp.date_naive();
-        if rd < since_date {
-            continue;
-        }
-        let day_offset = (rd - since_date).num_days() as usize;
-        let slot_in_day = (record.timestamp.hour() / bucket_hours) as usize;
-        let idx = day_offset * slots_per_day as usize + slot_in_day;
-        if idx < num_slots {
-            data[idx] += sparkline_value(record, use_cost);
-        }
-    }
-
-    data
-}
-
-/// Build a sparkline of N-day buckets since `since_date`.
-/// `bucket_days` controls granularity (e.g. 1, 2, 7).
-fn build_day_sparkline(
-    records: &[Record],
-    since_date: NaiveDate,
-    bucket_days: u32,
-    use_cost: bool,
-) -> Vec<u64> {
-    let bucket_days = bucket_days.max(1) as i64;
-    let today = Utc::now().date_naive();
-    let total_days = (today - since_date).num_days().max(0) + 1;
-    let num_slots = ((total_days + bucket_days - 1) / bucket_days) as usize; // ceil
-    let mut data = vec![0u64; num_slots];
-
-    for record in records {
-        let rd = record.timestamp.date_naive();
-        if rd < since_date {
-            continue;
-        }
-        let day_offset = (rd - since_date).num_days();
-        let idx = (day_offset / bucket_days) as usize;
-        if idx < num_slots {
-            data[idx] += sparkline_value(record, use_cost);
-        }
-    }
-
-    data
-}
-
-/// Build weekly sparkline data from a set of records.
-/// Returns `(sparkline_vec, start_week)` where `start_week` is `Some((iso_year, iso_week))`
-/// of the first bar, or `None` if no records.
-fn build_weekly_sparkline_data(
-    records: &[Record],
-    use_cost: bool,
-) -> (Vec<u64>, Option<(i32, u32)>) {
-    if records.is_empty() {
-        return (Vec::new(), None);
-    }
-
-    // Find the range of ISO weeks
-    let first_week = records
-        .iter()
-        .map(|r| r.timestamp.date_naive().iso_week())
-        .min()
-        .unwrap();
-    let last_week = records
-        .iter()
-        .map(|r| r.timestamp.date_naive().iso_week())
-        .max()
-        .unwrap();
-
-    let start_year = records
-        .iter()
-        .map(|r| r.timestamp.date_naive().iso_week())
-        .min()
-        .map(|_| {
-            records
-                .iter()
-                .filter(|r| r.timestamp.date_naive().iso_week() == first_week)
-                .map(|r| r.timestamp.date_naive())
-                .min()
-                .unwrap()
-        })
-        .unwrap();
-
-    let start_yw = (start_year.iso_week().year(), start_year.iso_week().week());
-
-    // Calculate total weeks span
-    let end_date = records
-        .iter()
-        .filter(|r| r.timestamp.date_naive().iso_week() == last_week)
-        .map(|r| r.timestamp.date_naive())
-        .max()
-        .unwrap();
-    let end_yw = (end_date.iso_week().year(), end_date.iso_week().week());
-
-    let total_weeks = iso_week_diff(start_yw, end_yw) + 1;
-    let mut data = vec![0u64; total_weeks];
-
-    for record in records {
-        let rd = record.timestamp.date_naive();
-        let yw = (rd.iso_week().year(), rd.iso_week().week());
-        let idx = iso_week_diff(start_yw, yw);
-        if idx < total_weeks {
-            data[idx] += sparkline_value(record, use_cost);
-        }
-    }
-
-    (data, Some(start_yw))
-}
-
-/// Compute the number of ISO weeks between two (year, week) pairs.
-fn iso_week_diff(start: (i32, u32), end: (i32, u32)) -> usize {
-    // Use NaiveDate to compute the difference in days, then divide by 7.
-    // Monday of each ISO week.
-    let start_date = NaiveDate::from_isoywd_opt(start.0, start.1, chrono::Weekday::Mon)
-        .unwrap_or(NaiveDate::from_ymd_opt(start.0, 1, 1).unwrap());
-    let end_date = NaiveDate::from_isoywd_opt(end.0, end.1, chrono::Weekday::Mon)
-        .unwrap_or(NaiveDate::from_ymd_opt(end.0, 1, 1).unwrap());
-    let days = (end_date - start_date).num_days().max(0);
-    (days / 7) as usize
-}
-
-/// Merge the historical base weekly sparkline with current-window records
-/// into a single weekly sparkline for the All Time card.
-fn merge_weekly_sparklines(
-    base: &[u64],
-    base_start: Option<(i32, u32)>,
-    current_records: &[Record],
-    use_cost: bool,
-) -> Vec<u64> {
-    let now = Utc::now().date_naive();
-    let now_yw = (now.iso_week().year(), now.iso_week().week());
-
-    if base.is_empty() && current_records.is_empty() {
-        return Vec::new();
-    }
-
-    // If no base, just build from current records
-    if base.is_empty() || base_start.is_none() {
-        let (sparkline, _) = build_weekly_sparkline_data(current_records, use_cost);
-        return sparkline;
-    }
-
-    let start_yw = base_start.unwrap();
-    let total_weeks = iso_week_diff(start_yw, now_yw) + 1;
-    let mut data = vec![0u64; total_weeks];
-
-    // Copy base data
-    for (i, &val) in base.iter().enumerate() {
-        if i < total_weeks {
-            data[i] = val;
-        }
-    }
-
-    // Add current window records
-    for record in current_records {
-        let rd = record.timestamp.date_naive();
-        let yw = (rd.iso_week().year(), rd.iso_week().week());
-        let idx = iso_week_diff(start_yw, yw);
-        if idx < total_weeks {
-            data[idx] += sparkline_value(record, use_cost);
-        }
-    }
-
-    data
-}
-
-/// Compute a simple trend from sparkline data.
-/// Compares the last value to the average of previous values.
-fn compute_trend(data: &[u64]) -> i8 {
-    if data.len() < 2 {
-        return 0;
-    }
-    let last = data[data.len() - 1];
-    #[allow(clippy::cast_possible_truncation)]
-    let prev_avg = data[..data.len() - 1].iter().sum::<u64>() / (data.len() as u64 - 1).max(1);
-    if last > prev_avg.saturating_add(prev_avg / 10) {
-        1 // increasing
-    } else if last < prev_avg.saturating_sub(prev_avg / 10) {
-        -1 // decreasing
-    } else {
-        0 // flat
-    }
 }

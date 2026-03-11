@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate};
 use rusqlite::{params, types::Value, Connection, Row};
 
 use std::borrow::Cow;
@@ -42,9 +42,8 @@ impl Cache {
         let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         if mode != "wal" {
             eprintln!(
-                "[tokemon] Warning: requested WAL journal mode but got '{}'; \
-                 writes may be slower",
-                mode
+                "[tokemon] Warning: requested WAL journal mode but got '{mode}'; \
+                 writes may be slower"
             );
         }
 
@@ -156,9 +155,9 @@ impl Cache {
     /// Get all cached (file, mtime) pairs in one query for bulk staleness checking.
     pub fn cached_file_mtimes(&self) -> anyhow::Result<std::collections::HashMap<String, i64>> {
         let mut map = std::collections::HashMap::new();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT source_file, source_mtime FROM usage_entries")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT source_file, MAX(source_mtime) FROM usage_entries GROUP BY source_file",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
@@ -180,10 +179,17 @@ impl Cache {
             Self::ENTRY_COLUMNS
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let entries: Vec<Record> = stmt
-            .query_map([], Self::row_to_entry)?
-            .filter_map(|r| r.ok())
-            .collect();
+        let mut entries = Vec::new();
+        let mut skipped = 0u64;
+        for row in stmt.query_map([], Self::row_to_entry)? {
+            match row {
+                Ok(record) => entries.push(record),
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            eprintln!("[tokemon] Warning: skipped {skipped} cached entries with parse errors");
+        }
         Ok(dedup::deduplicate(entries))
     }
 
@@ -229,17 +235,23 @@ impl Cache {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let entries: Vec<Record> = stmt
-            .query_map(rusqlite::params_from_iter(param_values), Self::row_to_entry)?
-            .filter_map(|r| r.ok())
-            .collect();
+        let mut entries = Vec::new();
+        let mut skipped = 0u64;
+        for row in stmt.query_map(rusqlite::params_from_iter(param_values), Self::row_to_entry)? {
+            match row {
+                Ok(record) => entries.push(record),
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            eprintln!("[tokemon] Warning: skipped {skipped} cached entries with parse errors");
+        }
         Ok(dedup::deduplicate(entries))
     }
 
     /// Remove stale entries for a file and store new ones.
     ///
-    /// Used by `write_entries` (via the `Transaction` API) and directly
-    /// in tests. Production code should prefer `write_entries`.
+    /// Used directly by parsers to store single-file results.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn store_file_entries(
         &self,
@@ -279,7 +291,7 @@ impl Cache {
                 entry.message_id,
                 entry.request_id,
                 entry.session_id,
-                entry.dedup_key(),
+                Some(entry.dedup_key()),
             ])?;
         }
 
@@ -333,7 +345,7 @@ impl Cache {
                     entry.message_id,
                     entry.request_id,
                     entry.session_id,
-                    entry.dedup_key(),
+                    Some(entry.dedup_key()),
                 ])?;
                 total += 1;
             }
@@ -395,36 +407,30 @@ impl Cache {
 
     /// Mark entries as preserved when their source files no longer exist on disk.
     /// `discovered_files` is the set of currently-existing source file paths.
-    pub fn mark_preserved(&self, discovered_files: &std::collections::HashSet<String>) {
+    pub fn mark_preserved(
+        &self,
+        discovered_files: &std::collections::HashSet<String>,
+    ) -> anyhow::Result<()> {
         if discovered_files.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Get all distinct source files in the cache
-        let Ok(mut stmt) = self
+        let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT source_file FROM usage_entries WHERE preserved = 0")
-        else {
-            return;
-        };
-        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
-            return;
-        };
+            .prepare("SELECT DISTINCT source_file FROM usage_entries WHERE preserved = 0")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
         let cached_files: Vec<String> = rows.flatten().collect();
         for file in &cached_files {
             if !discovered_files.contains(file) {
-                if let Err(e) = self.conn.execute(
+                self.conn.execute(
                     "UPDATE usage_entries SET preserved = 1 WHERE source_file = ?1 AND preserved = 0",
                     params![file],
-                ) {
-                    eprintln!(
-                        "[tokemon] Warning: failed to preserve entries for {}: {}",
-                        file, e
-                    );
-                }
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Delete preserved entries with timestamps before the given date.
@@ -443,7 +449,13 @@ impl Cache {
         let ts_str: String = row.get(1)?;
         let timestamp = DateTime::parse_from_rfc3339(&ts_str)
             .map(|dt| dt.to_utc())
-            .unwrap_or_else(|_| Utc::now());
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
 
         let provider: String = row.get(0)?;
         Ok(Record {
@@ -591,7 +603,7 @@ mod tests {
         // Only file_a still exists on disk
         let discovered: HashSet<String> = ["/data/file_a.jsonl".to_string()].into_iter().collect();
 
-        cache.mark_preserved(&discovered);
+        cache.mark_preserved(&discovered).unwrap();
 
         // file_b's entries should be preserved=1
         let preserved_count: i64 = cache
@@ -629,7 +641,7 @@ mod tests {
             .unwrap();
 
         // Empty discovered set should not mark anything
-        cache.mark_preserved(&HashSet::new());
+        cache.mark_preserved(&HashSet::new()).unwrap();
 
         let preserved_count: i64 = cache
             .conn

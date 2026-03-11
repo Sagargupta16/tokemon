@@ -7,12 +7,99 @@ use crate::paths;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
+/// Default subcommand when none is specified on the CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultCommand {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl DefaultCommand {
+    /// Cycle to the next value (used by the TUI settings editor).
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Daily => Self::Weekly,
+            Self::Weekly => Self::Monthly,
+            Self::Monthly => Self::Daily,
+        }
+    }
+}
+
+impl std::fmt::Display for DefaultCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Daily => f.write_str("daily"),
+            Self::Weekly => f.write_str("weekly"),
+            Self::Monthly => f.write_str("monthly"),
+        }
+    }
+}
+
+/// Sort order for CLI table output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigSortOrder {
+    Asc,
+    Desc,
+}
+
+impl ConfigSortOrder {
+    /// Cycle to the next value (used by the TUI settings editor).
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Asc => Self::Desc,
+            Self::Desc => Self::Asc,
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigSortOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asc => f.write_str("asc"),
+            Self::Desc => f.write_str("desc"),
+        }
+    }
+}
+
+/// Which metric to use for sparkline trendlines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SparklineMetric {
+    Tokens,
+    Cost,
+}
+
+impl SparklineMetric {
+    /// Cycle to the next value (used by the TUI settings editor).
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Tokens => Self::Cost,
+            Self::Cost => Self::Tokens,
+        }
+    }
+}
+
+impl std::fmt::Display for SparklineMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tokens => f.write_str("tokens"),
+            Self::Cost => f.write_str("cost"),
+        }
+    }
+}
+
 /// User configuration for tokemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Default subcommand when none specified: "daily", "weekly", "monthly"
-    pub default_command: String,
+    /// Default subcommand when none specified
+    pub default_command: DefaultCommand,
 
     /// Default output format: "table" or "json"
     pub default_format: String,
@@ -32,8 +119,8 @@ pub struct Config {
     /// Column visibility settings
     pub columns: ColumnConfig,
 
-    /// Sort order: "asc" (oldest first) or "desc" (newest first)
-    pub sort_order: String,
+    /// Sort order for CLI table output
+    pub sort_order: ConfigSortOrder,
 
     /// Always re-discover files (ignore cache freshness)
     pub refresh: bool,
@@ -50,8 +137,8 @@ pub struct Config {
     /// Show sparkline trendlines in summary cards
     pub show_sparklines: bool,
 
-    /// Sparkline metric: "tokens" or "cost"
-    pub sparkline_metric: String,
+    /// Sparkline metric for trendlines
+    pub sparkline_metric: SparklineMetric,
 
     /// Today sparkline bucket size in minutes (default: 10)
     pub today_bucket_mins: u64,
@@ -95,20 +182,20 @@ pub struct ColumnConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            default_command: "daily".to_string(),
+            default_command: DefaultCommand::Daily,
             default_format: "table".to_string(),
             breakdown: false,
             no_cost: false,
             offline: false,
             providers: Vec::new(),
             columns: ColumnConfig::default(),
-            sort_order: "asc".to_string(),
+            sort_order: ConfigSortOrder::Asc,
             refresh: false,
             reparse: false,
             budget: BudgetConfig::default(),
             tick_interval: 0,
             show_sparklines: true,
-            sparkline_metric: "tokens".to_string(),
+            sparkline_metric: SparklineMetric::Tokens,
             today_bucket_mins: 10,
             week_bucket_hours: 4,
             month_bucket_days: 1,
@@ -153,20 +240,13 @@ impl Config {
         }
     }
 
-    /// Validate config values, replacing invalid ones with defaults
+    /// Validate config values, replacing invalid ones with defaults.
+    ///
+    /// `default_command`, `sort_order`, and `sparkline_metric` are enums
+    /// with `#[serde(rename_all = "lowercase")]`, so invalid TOML values
+    /// are caught at deserialization time and never reach this method.
     fn validated(mut self) -> Self {
         let defaults = Self::default();
-
-        if !matches!(
-            self.default_command.as_str(),
-            "daily" | "weekly" | "monthly"
-        ) {
-            eprintln!(
-                "[tokemon] Warning: invalid default_command '{}'; using '{}'",
-                self.default_command, defaults.default_command
-            );
-            self.default_command = defaults.default_command;
-        }
 
         if !matches!(self.default_format.as_str(), "table" | "json") {
             eprintln!(
@@ -174,22 +254,6 @@ impl Config {
                 self.default_format, defaults.default_format
             );
             self.default_format = defaults.default_format;
-        }
-
-        if !matches!(self.sort_order.as_str(), "asc" | "desc") {
-            eprintln!(
-                "[tokemon] Warning: invalid sort_order '{}'; using '{}'",
-                self.sort_order, defaults.sort_order
-            );
-            self.sort_order = defaults.sort_order;
-        }
-
-        if !matches!(self.sparkline_metric.as_str(), "tokens" | "cost") {
-            eprintln!(
-                "[tokemon] Warning: invalid sparkline_metric '{}'; using '{}'",
-                self.sparkline_metric, defaults.sparkline_metric
-            );
-            self.sparkline_metric = defaults.sparkline_metric;
         }
 
         // Clamp bucket sizes to sensible ranges
@@ -227,7 +291,7 @@ impl Config {
                       #\n\
                       # Changes here affect default behavior.\n\
                       # CLI flags always override config values.\n\n";
-        fs::write(&path, format!("{}{}", header, content))?;
+        fs::write(&path, format!("{header}{content}"))?;
         Ok(path)
     }
 
@@ -248,9 +312,96 @@ impl Config {
     }
 
     pub fn config_path() -> PathBuf {
-        let config_dir = directories::ProjectDirs::from("", "", "tokemon")
-            .map(|d| d.config_dir().to_path_buf())
-            .unwrap_or_else(|| paths::home_dir().join(".config/tokemon"));
+        let config_dir = directories::ProjectDirs::from("", "", "tokemon").map_or_else(
+            || paths::home_dir().join(".config/tokemon"),
+            |d| d.config_dir().to_path_buf(),
+        );
         config_dir.join(CONFIG_FILENAME)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.default_command, DefaultCommand::Daily);
+        assert_eq!(config.default_format, "table");
+        assert!(!config.breakdown);
+        assert!(!config.no_cost);
+        assert!(!config.offline);
+        assert!(config.providers.is_empty());
+        assert_eq!(config.sort_order, ConfigSortOrder::Asc);
+        assert!(!config.refresh);
+        assert!(!config.reparse);
+        assert_eq!(config.tick_interval, 0);
+        assert!(config.show_sparklines);
+        assert_eq!(config.sparkline_metric, SparklineMetric::Tokens);
+        assert_eq!(config.today_bucket_mins, 10);
+        assert_eq!(config.week_bucket_hours, 4);
+        assert_eq!(config.month_bucket_days, 1);
+
+        assert!(config.columns.date);
+        assert!(config.columns.model);
+        assert!(config.columns.api_provider);
+        assert!(config.columns.client);
+        assert!(config.columns.input);
+        assert!(config.columns.output);
+        assert!(config.columns.cache_write);
+        assert!(config.columns.cache_read);
+        assert!(config.columns.total_tokens);
+        assert!(config.columns.cost);
+
+        assert!(config.budget.daily.is_none());
+        assert!(config.budget.weekly.is_none());
+        assert!(config.budget.monthly.is_none());
+    }
+
+    #[test]
+    fn test_default_command_enum() {
+        assert_eq!(DefaultCommand::Daily.next(), DefaultCommand::Weekly);
+        assert_eq!(DefaultCommand::Weekly.next(), DefaultCommand::Monthly);
+        assert_eq!(DefaultCommand::Monthly.next(), DefaultCommand::Daily);
+
+        assert_eq!(DefaultCommand::Daily.to_string(), "daily");
+        assert_eq!(DefaultCommand::Weekly.to_string(), "weekly");
+        assert_eq!(DefaultCommand::Monthly.to_string(), "monthly");
+    }
+
+    #[test]
+    fn test_config_sort_order_enum() {
+        assert_eq!(ConfigSortOrder::Asc.next(), ConfigSortOrder::Desc);
+        assert_eq!(ConfigSortOrder::Desc.next(), ConfigSortOrder::Asc);
+
+        assert_eq!(ConfigSortOrder::Asc.to_string(), "asc");
+        assert_eq!(ConfigSortOrder::Desc.to_string(), "desc");
+    }
+
+    #[test]
+    fn test_sparkline_metric_enum() {
+        assert_eq!(SparklineMetric::Tokens.next(), SparklineMetric::Cost);
+        assert_eq!(SparklineMetric::Cost.next(), SparklineMetric::Tokens);
+
+        assert_eq!(SparklineMetric::Tokens.to_string(), "tokens");
+        assert_eq!(SparklineMetric::Cost.to_string(), "cost");
+    }
+
+    #[test]
+    fn test_config_validated() {
+        let mut config = Config::default();
+        config.default_format = "invalid".to_string();
+        config.today_bucket_mins = 0;
+        config.week_bucket_hours = 25;
+        config.month_bucket_days = 8;
+        config.tick_interval = 400;
+
+        let validated = config.validated();
+        assert_eq!(validated.default_format, "table"); // Reset to default
+        assert_eq!(validated.today_bucket_mins, 10);
+        assert_eq!(validated.week_bucket_hours, 4);
+        assert_eq!(validated.month_bucket_days, 1);
+        assert_eq!(validated.tick_interval, 300); // Clamped to 300
     }
 }

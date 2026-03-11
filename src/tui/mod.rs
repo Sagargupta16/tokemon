@@ -1,6 +1,8 @@
 mod app;
 pub(crate) mod diff;
 mod event;
+pub(crate) mod settings_state;
+mod sparkline_data;
 mod terminal;
 mod theme;
 mod views;
@@ -41,8 +43,10 @@ pub fn run(config: &Config, initial_view: &str, tick_interval: u64) -> anyhow::R
         tick_interval
     };
 
-    // Build a tokio runtime for the async event loop.
-    let runtime = tokio::runtime::Runtime::new()?;
+    // Build a single-threaded tokio runtime for the async event loop.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
     runtime.block_on(async { run_async(config, scope, tick_secs).await })
 }
@@ -73,7 +77,7 @@ async fn run_async(config: &Config, scope: Scope, tick_secs: u64) -> anyhow::Res
             other => {
                 app.handle_event(other);
             }
-        };
+        }
 
         if app.should_quit {
             break;

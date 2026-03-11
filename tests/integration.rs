@@ -192,7 +192,7 @@ fn test_dedup_key_generation() {
         request_id: Some("req_1".to_string()),
         session_id: None,
     };
-    assert_eq!(entry_both.dedup_key(), Some("msg_1\0req_1".to_string()));
+    assert_eq!(entry_both.dedup_key(), "msg_1\0req_1".to_string());
 
     let entry_msg_only = Record {
         message_id: Some("msg_2".to_string()),
@@ -201,15 +201,20 @@ fn test_dedup_key_generation() {
     };
     assert_eq!(
         entry_msg_only.dedup_key(),
-        Some("msg_2\0model-a\0100\050".to_string())
+        "msg_2\0model-a\0100\050".to_string()
     );
 
     let entry_none = Record {
         message_id: None,
         request_id: None,
-        ..entry_both
+        ..entry_both.clone()
     };
-    assert_eq!(entry_none.dedup_key(), None);
+    // Content-based dedup key includes timestamp, provider, model, tokens
+    let key = entry_none.dedup_key();
+    assert!(key.contains("test"));
+    assert!(key.contains("model-a"));
+    assert!(key.contains("100"));
+    assert!(key.contains("50"));
 }
 
 // --- Session aggregation tests ---
