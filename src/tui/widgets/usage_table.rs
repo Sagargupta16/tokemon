@@ -71,17 +71,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 || (app.scope == crate::tui::app::Scope::Month
                     && summary.date >= crate::tui::app::Scope::Month.since());
 
-            let header_style = if is_current {
-                theme::text_bold()
-            } else {
-                theme::text_dim()
-            };
-
-            let sub_style = if is_current {
-                theme::text()
-            } else {
-                theme::text_dim()
-            };
+            let header_style = theme::text_bold();
+            let sub_style = theme::text();
 
             // Period summary row
             let total = summary.total_input
