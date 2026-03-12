@@ -71,11 +71,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 || (app.scope == crate::tui::app::Scope::Month
                     && summary.date >= crate::tui::app::Scope::Month.since());
 
-            let style = if is_current {
-                theme::text_bold()
-            } else {
-                theme::text_dim()
-            };
+            let header_style = theme::text_bold();
+            let sub_style = theme::text();
 
             // Period summary row
             let total = summary.total_input
@@ -91,9 +88,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 summary.total_output,
                 total,
                 summary.total_cost,
-                style,
+                header_style,
                 is_current,
-                0.0, // no per-cell highlight in history mode
+                0.0, // no per-cell highlight on period header
             );
             rows.push(Row::new(period_cells).height(1));
 
@@ -101,6 +98,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             {
                 for mu in &summary.models {
                     let model_total = mu.total_tokens();
+
+                    let intensity = if is_current {
+                        let row_key = RowKey::from(mu);
+                        app.highlight_intensity(&row_key)
+                    } else {
+                        0.0
+                    };
+
                     let sub_cells = cols.build_row(
                         &format!("  {}", display::display_model(&mu.model)),
                         display::infer_api_provider(mu.effective_raw_model()),
@@ -110,9 +115,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                         mu.output_tokens,
                         model_total,
                         mu.cost_usd,
-                        style,
+                        sub_style,
                         is_current,
-                        0.0, // no per-cell highlight in history mode
+                        intensity,
                     );
                     rows.push(Row::new(sub_cells).height(1));
                 }
