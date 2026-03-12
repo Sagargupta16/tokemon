@@ -317,7 +317,7 @@ impl ColumnSet {
         if self.show_input {
             let s = format_tokens_short(input);
             let normal_style = if use_color {
-                theme::tokens_style(input)
+                base_style.fg(theme::tokens_color(input))
             } else {
                 base_style
             };
@@ -327,7 +327,7 @@ impl ColumnSet {
         if self.show_output {
             let s = format_tokens_short(output);
             let normal_style = if use_color {
-                theme::tokens_style(output)
+                base_style.fg(theme::tokens_color(output))
             } else {
                 base_style
             };
@@ -337,7 +337,7 @@ impl ColumnSet {
 
         let total_s = format_tokens_short(total);
         let normal_total = if use_color {
-            theme::tokens_style(total)
+            base_style.fg(theme::tokens_color(total))
         } else {
             base_style
         };
@@ -346,7 +346,7 @@ impl ColumnSet {
 
         let cost_s = format_cost(cost);
         let normal_cost = if use_color {
-            theme::cost_style(cost)
+            base_style.fg(theme::cost_color(cost))
         } else {
             base_style
         };

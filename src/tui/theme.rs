@@ -98,10 +98,10 @@ pub fn border() -> Style {
     Style::default().fg(BORDER).bg(BG)
 }
 
-/// Cost styling based on value.
+/// Cost foreground color based on value.
 #[must_use]
-pub fn cost_style(cost: f64) -> Style {
-    let fg = if cost == 0.0 {
+pub fn cost_color(cost: f64) -> Color {
+    if cost == 0.0 {
         DIM
     } else if cost < 1.0 {
         GREEN
@@ -109,22 +109,25 @@ pub fn cost_style(cost: f64) -> Style {
         YELLOW
     } else {
         RED
-    };
-    Style::default().fg(fg).bg(BG)
+    }
+}
+
+/// Cost styling based on value.
+#[must_use]
+
+/// Token foreground color based on value (dim for zeros).
+pub fn tokens_color(n: u64) -> Color {
+    if n == 0 {
+        DIM
+    } else {
+        FG
+    }
 }
 
 /// Token count styling — dim for zeros.
 #[must_use]
-pub fn tokens_style(n: u64) -> Style {
-    if n == 0 {
-        text_dim()
-    } else {
-        text()
-    }
-}
 
 /// Surface panel style (for cards).
-#[must_use]
 pub fn card() -> Style {
     Style::default().fg(FG).bg(SURFACE)
 }
