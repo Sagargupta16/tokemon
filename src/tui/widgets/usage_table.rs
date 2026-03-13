@@ -112,10 +112,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                         0.0
                     };
 
+                    // Columns depend on group-by mode (same as normal view)
+                    let (name_col, api_col, client_col) = match app.group_by {
+                        crate::types::GroupBy::Model => (
+                            format!("  {}", display::display_model(&mu.model)),
+                            display::infer_api_provider(mu.effective_raw_model()).to_string(),
+                            String::new(),
+                        ),
+                        crate::types::GroupBy::ModelClient => (
+                            format!("  {}", display::display_model(&mu.model)),
+                            display::infer_api_provider(mu.effective_raw_model()).to_string(),
+                            display::display_client(&mu.provider).into_owned(),
+                        ),
+                        crate::types::GroupBy::Client => (
+                            format!("  {}", display::display_client(&mu.provider)),
+                            String::new(),
+                            String::new(),
+                        ),
+                    };
+
                     let sub_cells = cols.build_row(
-                        &format!("  {}", display::display_model(&mu.model)),
-                        display::infer_api_provider(mu.effective_raw_model()),
-                        "",
+                        &name_col,
+                        &api_col,
+                        &client_col,
                         mu.request_count,
                         mu.input_tokens,
                         mu.output_tokens,
