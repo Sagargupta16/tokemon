@@ -960,8 +960,12 @@ impl App {
             // Sort dates descending so newest periods appear at the top
             self.history_summaries.sort_by(|a, b| b.date.cmp(&a.date));
 
-            // Sort models within each period deterministically
+            // Regroup and sort models within each period based on current settings
             for summary in &mut self.history_summaries {
+                summary.models = rollup::aggregate_summaries_to_models(
+                    std::slice::from_ref(summary),
+                    self.group_by,
+                );
                 sort_models(&mut summary.models, self.sort_order);
             }
         } else {
